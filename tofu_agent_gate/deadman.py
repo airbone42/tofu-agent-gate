@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sys
+from pathlib import Path
 
 from . import proc
 from .config import Config
@@ -21,7 +23,7 @@ class Systemd:
     def unit(self, run_id: str) -> str:
         return f"{self.cfg.deadman_unit_prefix}-{run_id}"
 
-    def schedule(self, run_id: str) -> None:
+    def argv(self, run_id: str) -> list[str]:
         argv = [
             "systemd-run", "--quiet", f"--unit={self.unit(run_id)}",
             f"--on-active={self.cfg.deadman_minutes}min", "--timer-property=AccuracySec=1s",
@@ -29,8 +31,16 @@ class Systemd:
         ]
         if self.cfg.source:
             argv.append(f"--setenv=GATE_CONFIG={self.cfg.source}")
+        # Der Rollback-Dienst muss denselben Code finden wie der Runner, sonst
+        # scheitert er im Ernstfall mit ModuleNotFoundError.
+        pkg_root = Path(__file__).resolve().parent.parent
+        pythonpath = os.environ.get("PYTHONPATH") or str(pkg_root)
+        argv.append(f"--setenv=PYTHONPATH={pythonpath}")
         argv += [sys.executable, "-m", "tofu_agent_gate", "rollback", run_id]
-        r = proc.run(argv, env=proc.base_env(), timeout=30)
+        return argv
+
+    def schedule(self, run_id: str) -> None:
+        r = proc.run(self.argv(run_id), env=proc.base_env(), timeout=30)
         if not r.ok:
             raise DeadmanError(f"systemd-run fehlgeschlagen: {r.tail(3)}")
 
