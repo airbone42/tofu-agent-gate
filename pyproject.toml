@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tofu-agent-gate"
+version = "0.1.0.dev0"
+description = "Policy gate, Telegram approval and dead-man rollback around OpenTofu for agent-proposed changes"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = ["PyYAML>=6"]
+
+[project.scripts]
+tofu-agent-gate = "tofu_agent_gate.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tofu_agent_gate*"]

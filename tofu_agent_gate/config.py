@@ -1,0 +1,144 @@
+"""gate.yaml laden. Alle Pfade sind Defaults und per Datei überschreibbar."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+DEFAULT_CONFIG = "/etc/tofu-agent-gate/gate.yaml"
+
+
+class ConfigError(ValueError):
+    pass
+
+
+@dataclass
+class RepoConfig:
+    url: str
+    workdir: Path
+    main: str = "main"
+    branch_prefix: str = "desired/"
+    allowed_paths: list[str] = field(default_factory=lambda: ["tofu/*.auto.tfvars.json"])
+    commit_url: str | None = None
+    ssh_key: Path | None = None
+    # Oberste Schlüssel, die *.tfvars.json im Branch setzen dürfen. None = keine Prüfung.
+    allowed_variables: list[str] | None = None
+    author_name: str = "tofu-agent-gate"
+    author_email: str = "gate@localhost"
+
+
+@dataclass
+class TofuConfig:
+    binary: str = "/usr/local/bin/tofu"
+    dir: str = "tofu"
+    env_file: Path | None = None
+    cli_config: Path | None = None
+    state_path: Path = Path("/var/lib/tofu-agent-gate/tofu/terraform.tfstate")
+    state_backups: int = 30
+    timeout: int = 1200
+
+
+@dataclass
+class Config:
+    state_dir: Path
+    stop_file: Path
+    lock_file: Path
+    repo: RepoConfig
+    tofu: TofuConfig
+    policy: Path
+    telegram_env: Path | None = None
+    approval_timeout_minutes: int = 30
+    deadman_minutes: int = 10
+    deadman_unit_prefix: str = "tofu-agent-gate-rollback"
+    hooks: dict[str, list[str]] = field(default_factory=dict)
+    hooks_env_file: Path | None = None
+    hook_timeout: int = 300
+    redaction_extra: str | None = None
+    source: Path | None = None
+
+    @property
+    def runs_dir(self) -> Path:
+        return self.state_dir / "runs"
+
+
+def _p(v: Any) -> Path | None:
+    return Path(v) if v else None
+
+
+def from_dict(d: dict, source: Path | None = None) -> Config:
+    try:
+        repo = d["repo"]
+        state_dir = Path(d.get("state_dir", "/var/lib/tofu-agent-gate"))
+        t = d.get("tofu") or {}
+        appr = d.get("approval") or {}
+        dm = d.get("deadman") or {}
+        hooks = d.get("hooks") or {}
+        unknown_hooks = set(hooks) - {"snapshot", "pre_apply", "post_apply", "env_file", "timeout"}
+        if unknown_hooks:
+            raise ConfigError(f"Unbekannte Hooks {sorted(unknown_hooks)}")
+        author = repo.get("author") or {}
+        return Config(
+            state_dir=state_dir,
+            stop_file=Path(d.get("stop_file", "/etc/tofu-agent-gate/STOP")),
+            lock_file=Path(d.get("lock_file", "/run/tofu-agent-gate.lock")),
+            repo=RepoConfig(
+                url=repo["url"],
+                workdir=Path(repo.get("workdir", state_dir / "repo")),
+                main=repo.get("main", "main"),
+                branch_prefix=repo.get("branch_prefix", "desired/"),
+                allowed_paths=list(repo.get("allowed_paths") or ["tofu/*.auto.tfvars.json"]),
+                commit_url=repo.get("commit_url"),
+                ssh_key=_p(repo.get("ssh_key")),
+                allowed_variables=repo.get("allowed_variables"),
+                author_name=author.get("name", "tofu-agent-gate"),
+                author_email=author.get("email", "gate@localhost"),
+            ),
+            tofu=TofuConfig(
+                binary=t.get("binary", "/usr/local/bin/tofu"),
+                dir=t.get("dir", "tofu"),
+                env_file=_p(t.get("env_file")),
+                cli_config=_p(t.get("cli_config")),
+                state_path=Path(t.get("state_path", state_dir / "tofu" / "terraform.tfstate")),
+                state_backups=int(t.get("state_backups", 30)),
+                timeout=int(t.get("timeout", 1200)),
+            ),
+            policy=Path(d.get("policy", "/etc/tofu-agent-gate/policy.yaml")),
+            telegram_env=_p(appr.get("telegram_env")),
+            approval_timeout_minutes=int(appr.get("timeout_minutes", 30)),
+            deadman_minutes=int(dm.get("minutes", 10)),
+            deadman_unit_prefix=dm.get("unit_prefix", "tofu-agent-gate-rollback"),
+            hooks={k: list(v) for k, v in hooks.items() if k in ("snapshot", "pre_apply", "post_apply") and v},
+            hooks_env_file=_p(hooks.get("env_file")),
+            hook_timeout=int(hooks.get("timeout", 300)),
+            redaction_extra=(d.get("redaction") or {}).get("extra"),
+            source=source,
+        )
+    except KeyError as e:
+        raise ConfigError(f"Pflichtfeld fehlt: {e}") from None
+
+
+def load(path: str | Path | None = None) -> Config:
+    path = Path(path or os.environ.get("GATE_CONFIG") or DEFAULT_CONFIG)
+    with open(path, encoding="utf-8") as f:
+        return from_dict(yaml.safe_load(f) or {}, source=path)
+
+
+def load_env_file(path: Path | None) -> dict[str, str]:
+    """KEY=VALUE-Datei lesen (Kommentare, optionale Anführungszeichen, export)."""
+    if not path:
+        return {}
+    env = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.removeprefix("export ").partition("=")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        env[key.strip()] = value
+    return env

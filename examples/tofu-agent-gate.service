@@ -1,0 +1,9 @@
+[Unit]
+Description=tofu-agent-gate run
+ConditionPathExists=!/etc/tofu-agent-gate/STOP
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tofu-agent-gate run-once
+TimeoutStartSec=50min
+UMask=0077

@@ -1,0 +1,16 @@
+# Example configuration. Copy to /etc/tofu-agent-gate/gate.yaml (root, 600).
+state_dir: /var/lib/tofu-agent-gate
+stop_file: /etc/tofu-agent-gate/STOP
+lock_file: /run/tofu-agent-gate.lock
+repo:
+  url: ssh://git@git.example/infra/config.git
+  ssh_key: /etc/tofu-agent-gate/deploy_key
+  allowed_paths: ["tofu/*.auto.tfvars.json"]
+  allowed_variables: [dns_records]
+tofu:
+  env_file: /etc/tofu-agent-gate/tofu.env
+  cli_config: /etc/tofu-agent-gate/tofu.tfrc
+policy: /etc/tofu-agent-gate/policy.yaml
+approval:
+  telegram_env: /etc/tofu-agent-gate/telegram.env
+hooks: {}
