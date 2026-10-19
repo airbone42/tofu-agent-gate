@@ -1,6 +1,6 @@
 import os
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest import mock
 
 from tofu_agent_gate import config as configlib
@@ -9,7 +9,7 @@ from tofu_agent_gate.deadman import Systemd
 
 def cfg():
     c = configlib.from_dict({"repo": {"url": "x"}, "deadman": {"minutes": 20, "unit_prefix": "gate-rb"}})
-    c.source = Path("/etc/gate/gate.yaml")
+    c.source = PurePosixPath("/etc/gate/gate.yaml")
     return c
 
 
