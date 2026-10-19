@@ -219,6 +219,15 @@ class SummaryTest(unittest.TestCase):
         self.assertIn("update unifi_firewall_policy.x (iot to isolated)", text)
         self.assertIn("protocol: all -> tcp", text)
 
+    def test_summary_collapses_unknown_fields(self):
+        before = policy_obj("p1", "x", "iot", "isolated", index=10000)
+        after = dict(before, protocol="tcp")
+        after.pop("index")
+        c = rc("unifi_firewall_policy.x", ["update"], before, after, after_unknown={"index": True})
+        text = planlib.summarize(planlib.changes(plan(c)))
+        self.assertNotIn("<unknown>", text)
+        self.assertIn("1 Felder werden erst beim Apply berechnet", text)
+
 
 if __name__ == "__main__":
     unittest.main()

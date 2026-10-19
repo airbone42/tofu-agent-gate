@@ -188,11 +188,16 @@ def summarize(chs: list[Change], max_fields: int = 8) -> str:
         name = label(c)
         lines.append(f"{c.action} {c.address}" + (f" ({name})" if name else ""))
         if c.action in ("update", "replace"):
-            fields = diff_fields(c)
+            all_fields = diff_fields(c)
+            # Erst nach dem Apply bekannte Werte (z. B. index) nur zählen.
+            fields = [f for f in all_fields if f[2] != UNKNOWN]
+            computed = len(all_fields) - len(fields)
             for key, b, a in fields[:max_fields]:
                 lines.append(f"  {key}: {_short(b)} -> {_short(a)}")
             if len(fields) > max_fields:
                 lines.append(f"  ... {len(fields) - max_fields} weitere Felder")
+            if computed:
+                lines.append(f"  ({computed} Felder werden erst beim Apply berechnet)")
         elif c.action == "create":
             fields = [f for f in diff_fields(c) if f[2] not in (None, "", [], False)]
             for key, _, a in fields[:max_fields]:
