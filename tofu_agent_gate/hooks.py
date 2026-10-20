@@ -16,6 +16,18 @@ class HookResult:
     violations: list[dict] = field(default_factory=list)
     error: str | None = None
 
+    @property
+    def warnings(self) -> list[dict]:
+        """Freigebbare Verstöße (severity "approve") bei sonst bestandenem Hook.
+
+        Das Gate wendet dann nur nach einer Freigabe an und reicht die Liste an
+        post_apply weiter (GATE_APPROVED_WARNINGS), z. B. damit der Hook sie als
+        Ausnahme speichert.
+        """
+        if not self.ok:
+            return []
+        return [v for v in self.violations if v.get("severity") == "approve"]
+
     def messages(self) -> list[str]:
         msgs = [f"{v.get('id', '?')}: {v.get('message', '')}" for v in self.violations]
         if self.error:

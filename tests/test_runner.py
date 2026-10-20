@@ -275,6 +275,72 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue(any("no-bad" in r for r in run.reasons))
         self.assertEqual(self.deadman.scheduled, [])
 
+    def _warning_hooks(self):
+        """pre_apply meldet einen freigebbaren Verstoß, post_apply protokolliert die Übergabe."""
+        log = self.tmp / "post_apply.json"
+        warning = {"id": "new-source", "message": "neue Quelle", "severity": "approve",
+                   "title": "Neuer Zugang zu **git**", "exception": {"invariant": "x", "entry": {}}}
+        hooks = {
+            "pre_apply": self._hook_script("pre_warn", f"""
+                import json
+                print(json.dumps({{"ok": True, "violations": [{warning!r}]}}))
+            """),
+            "post_apply": self._hook_script("post_warn", f"""
+                import json, os
+                path = os.environ.get("GATE_APPROVED_WARNINGS")
+                json.dump(json.load(open(path)) if path else None, open({str(log)!r}, "w"))
+            """),
+        }
+        return hooks, log, warning
+
+    def test_approvable_warning_turns_auto_into_approval(self):
+        hooks, log, warning = self._warning_hooks()
+        runner = self._runner(hooks=hooks)
+        rec = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        self._push_branch("desired/warn", self._with("host-2", rec))
+        [run] = runner.run_once()
+        self.assertEqual(run.status, "applied", run.reasons)
+        self.assertEqual(run.level, "approval")
+        [req] = self.approver.requests
+        self.assertIn("⚠️ **Achtung:** Neuer Zugang zu **git**", req["summary"])
+        self.assertEqual(json.loads(log.read_text()), [warning])
+
+    def test_declined_warning_not_applied(self):
+        hooks, log, _ = self._warning_hooks()
+        self.approver.answer = False
+        runner = self._runner(hooks=hooks)
+        rec = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        self._push_branch("desired/warn", self._with("host-2", rec))
+        [run] = runner.run_once()
+        self.assertEqual(run.status, "declined")
+        self.assertNotIn('unifi_dns_record.this["host-2"]', self._ctl())
+        self.assertFalse(log.exists())
+
+    def test_no_warning_no_approved_file(self):
+        hooks, log, _ = self._warning_hooks()
+        hooks["pre_apply"] = self._hook_script("pre_ok", 'print("{}")')
+        runner = self._runner(hooks=hooks)
+        rec = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        self._push_branch("desired/ok", self._with("host-2", rec))
+        [run] = runner.run_once()
+        self.assertEqual((run.status, run.level), ("applied", "auto"))
+        self.assertIsNone(json.loads(log.read_text()))
+        self.assertEqual(self.approver.requests, [])
+
+    def test_failed_hook_warnings_are_not_warnings(self):
+        hooks, _, warning = self._warning_hooks()
+        hooks["pre_apply"] = self._hook_script("pre_fail", f"""
+            import json, sys
+            print(json.dumps({{"ok": False, "violations": [{warning!r}]}}))
+            sys.exit(1)
+        """)
+        runner = self._runner(hooks=hooks)
+        rec = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        self._push_branch("desired/fail", self._with("host-2", rec))
+        [run] = runner.run_once()
+        self.assertEqual(run.status, "rejected")
+        self.assertEqual(self.approver.requests, [])
+
     def _rollback_hooks(self, post_apply_fails=False):
         """Snapshot = Kopie des Controllers, post_rollback vergleicht vorher und nachher."""
         ctl = str(self.controller)

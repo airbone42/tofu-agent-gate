@@ -90,6 +90,7 @@ Ein Hook ist eine argv-Liste. Das Gate setzt diese Umgebungsvariablen:
 | `GATE_SNAPSHOT_OUT` | nur `snapshot`: Zielordner |
 | `GATE_SNAPSHOT_BEFORE` | Snapshot vor dem Apply (falls Snapshot-Hook gesetzt) |
 | `GATE_SNAPSHOT_AFTER` | `post_apply`: frischer Snapshot nach dem Apply, `post_rollback`: nach dem Rollback |
+| `GATE_APPROVED_WARNINGS` | nur `post_apply`, nur nach Freigabe mit Warnung: JSON-Datei mit den freigegebenen Verstößen aus `pre_apply` |
 
 Ausgabe auf stdout als JSON:
 
@@ -97,7 +98,13 @@ Ausgabe auf stdout als JSON:
 {"ok": false, "violations": [{"id": "tor-no-external", "message": "..."}]}
 ```
 
-Exitcode 0 = ok, 1 = Verstöße, alles andere = Fehler. Fehler zählen wie Verstöße. Timeout pro Hook 300 s.
+Exitcode 0 = ok, 1 = Verstöße, alles andere = Fehler. Fehler zählen wie Verstöße.
+
+Freigebbare Verstöße: Meldet `pre_apply` mit Exitcode 0 und `"ok": true` Verstöße mit
+`"severity": "approve"` (optional `"title"` als kurzer Text), wendet das Gate nie automatisch an.
+Es holt eine Freigabe, die jede Warnung zeigt, auch wenn die Policy `auto` ergeben hätte.
+Nach der Freigabe bekommt `post_apply` die Verstöße per `GATE_APPROVED_WARNINGS`, damit der
+Hook sie z. B. als dauerhafte Ausnahme speichern kann. Mit Exitcode 1 zählt `severity` nicht. Timeout pro Hook 300 s.
 
 ## Policy (policy.yaml)
 

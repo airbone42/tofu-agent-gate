@@ -273,13 +273,21 @@ class Runner:
                               snapshot_before=snap_before)
         if not hr.ok:
             return self._reject(run, "Invarianten verletzt: " + "; ".join(hr.messages()))
+        warnings = hr.warnings
+        if warnings:
+            # Freigebbarer Verstoß: nie automatisch, immer mit Warnung in der Freigabe.
+            run.level = "approval"
+            run.reasons += ["Freigabe mit Warnung: " + w.get("id", "?") for w in warnings]
+            run.save(self.cfg.runs_dir)
 
-        if dec.level == "approval":
+        approved_warnings = None
+        if run.level == "approval":
             if not self.d.approver:
                 return self._reject(run, "Freigabe nötig, aber kein Freigabekanal konfiguriert")
             link = self.cfg.repo.commit_url.format(sha=br.head) if self.cfg.repo.commit_url else None
+            warn = "".join(f"\n\n⚠️ **Achtung:** {w.get('title') or w.get('message', '')}" for w in warnings)
             res = self.d.approver.request(
-                plan_hash=run.plan_hash, summary=f"{run.summary}\n\nBranch {br.name}",
+                plan_hash=run.plan_hash, summary=f"{run.summary}{warn}\n\nBranch {br.name}",
                 agent_reason=git.message(br.head), link=link,
                 timeout_s=self.cfg.approval_timeout_minutes * 60,
             )
@@ -287,8 +295,12 @@ class Runner:
                 why = {"declined": "abgelehnt", "timeout": "keine Antwort"}.get(getattr(res, "reason", ""), "")
                 self._notify(f"🚫 **Nicht freigegeben**: {br.name}" + (f" ({why})" if why else ""))
                 return self._finish(run, "declined", getattr(res, "reason", None))
+            if warnings:
+                approved_warnings = rdir / "approved-warnings.json"
+                approved_warnings.write_text(json.dumps(warnings, ensure_ascii=False), encoding="utf-8")
+                os.chmod(approved_warnings, 0o600)
 
-        return self._apply(run, br, rdir, wt, tofu, planfile, plan_path, snap_before)
+        return self._apply(run, br, rdir, wt, tofu, planfile, plan_path, snap_before, approved_warnings)
 
     def _check_variables(self, wt: Path, paths: list[str]) -> str | None:
         """Agenten dürfen nur freigegebene Variablen setzen (nicht z. B. Passphrasen)."""
@@ -321,7 +333,7 @@ class Runner:
     # ------------------------------------------------------------ Apply
 
     def _apply(self, run: Run, br: Branch, rdir: Path, wt: Path, tofu, planfile: Path,
-               plan_path: Path, snap_before: Path | None) -> Run:
+               plan_path: Path, snap_before: Path | None, approved_warnings: Path | None = None) -> Run:
         self._backup_state(run.run_id)
         run.status = "applying"
         run.pid = os.getpid()
@@ -335,7 +347,7 @@ class Runner:
         r = tofu.apply(planfile)
         problem = None if r.ok else f"tofu apply fehlgeschlagen:\n{r.tail(8)}"
         if not problem:
-            problem = self._health(run, wt, tofu, plan_path, snap_before, rdir)
+            problem = self._health(run, wt, tofu, plan_path, snap_before, rdir, approved_warnings)
 
         if problem:
             run.reasons.append(problem)
@@ -353,7 +365,7 @@ class Runner:
         return self._finish(run, "applied")
 
     def _health(self, run: Run, wt: Path, tofu, plan_path: Path, snap_before: Path | None,
-                rdir: Path) -> str | None:
+                rdir: Path, approved_warnings: Path | None = None) -> str | None:
         r = tofu.plan_detailed()
         if r.rc != 0:
             return f"Plan nach dem Apply nicht leer (rc={r.rc}):\n{r.tail(8)}"
@@ -364,7 +376,8 @@ class Runner:
             if not hr.ok:
                 return "Snapshot nach dem Apply fehlgeschlagen: " + "; ".join(hr.messages())
         hr = self.d.hooks.run("post_apply", run.run_id, plan_json=plan_path, repo_dir=wt,
-                              snapshot_before=snap_before, snapshot_after=snap_after)
+                              snapshot_before=snap_before, snapshot_after=snap_after,
+                              approved_warnings=approved_warnings)
         if not hr.ok:
             return "Health-Check fehlgeschlagen: " + "; ".join(hr.messages())
         return None
