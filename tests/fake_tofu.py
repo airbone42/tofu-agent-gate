@@ -5,6 +5,7 @@ Fehler lassen sich über Werte einschleusen:
   value == "FAIL_APPLY"   Apply bricht nach dem Schreiben ab (rc 1)
   value == "SILENT_DRIFT" Controller speichert etwas anderes (Plan danach nicht leer)
   value == "CRASH"        Runner-Prozess stirbt mitten im Apply (BaseException)
+Wie beim UniFi-Provider heißt null "nicht anfassen": Der Wert auf dem Controller bleibt.
 """
 
 from __future__ import annotations
@@ -42,11 +43,20 @@ class FakeTofu:
                 out[f'unifi_dns_record.this["{key}"]'] = attrs
         return out
 
+    @staticmethod
+    def _merge(before: dict | None, after: dict | None) -> dict | None:
+        if after is None:
+            return None
+        out = {k: v for k, v in after.items() if v is not None}
+        out.update({k: before[k] for k, v in after.items() if v is None and before and k in before})
+        return out
+
     def _changes(self) -> list[dict]:
         ctl, want = self._ctl(), self._desired()
         changes = []
         for addr in sorted(set(ctl) | set(want)):
-            before, after = ctl.get(addr), want.get(addr)
+            before = ctl.get(addr)
+            after = self._merge(before, want.get(addr))
             if before == after:
                 continue
             actions = ["create"] if before is None else ["delete"] if after is None else ["update"]

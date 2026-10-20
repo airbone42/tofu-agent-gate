@@ -71,6 +71,7 @@ hooks:                             # argv-Listen, leer = aus
   snapshot: []                     # schreibt einen Snapshot nach $GATE_SNAPSHOT_OUT
   pre_apply: []                    # Invarianten auf dem geplanten Zustand
   post_apply: []                   # Health-Checks und Invarianten auf frischem Export
+  post_rollback: []                # nach dem Rollback: frischer Export gleich Snapshot vorher?
 
 redaction:
   extra: null                      # z. B. "unifi_snapshot.normalize:redact_text"
@@ -83,12 +84,12 @@ Ein Hook ist eine argv-Liste. Das Gate setzt diese Umgebungsvariablen:
 | Variable | Inhalt |
 |---|---|
 | `GATE_RUN_ID` | ID des Laufs |
-| `GATE_PHASE` | `snapshot`, `pre_apply` oder `post_apply` |
-| `GATE_PLAN_JSON` | Pfad zum Plan-JSON |
+| `GATE_PHASE` | `snapshot`, `pre_apply`, `post_apply` oder `post_rollback` |
+| `GATE_PLAN_JSON` | Pfad zum Plan-JSON. Bei `post_rollback` ein leerer Plan, erwartet ist keine Änderung |
 | `GATE_REPO_DIR` | Checkout, der geplant wurde |
 | `GATE_SNAPSHOT_OUT` | nur `snapshot`: Zielordner |
 | `GATE_SNAPSHOT_BEFORE` | Snapshot vor dem Apply (falls Snapshot-Hook gesetzt) |
-| `GATE_SNAPSHOT_AFTER` | nur `post_apply`: frischer Snapshot nach dem Apply |
+| `GATE_SNAPSHOT_AFTER` | `post_apply`: frischer Snapshot nach dem Apply, `post_rollback`: nach dem Rollback |
 
 Ausgabe auf stdout als JSON:
 
@@ -188,4 +189,8 @@ Ergebnisdateien liegen unter `state_dir/runs/<run_id>.json` und werden nicht ins
 2. **Lock und Ziel:** Lock holen und `last-good` auschecken.
 3. **Planen und prüfen:** `plan`, dann Policy im Rollback-Modus (nur `forbidden`).
 4. **Anwenden und prüfen:** `apply`, danach muss ein erneuter Plan leer sein.
-5. **Melden:** Erfolg oder Fehlschlag per Telegram. Bei Fehlschlag setzt der Rollback die STOP-Datei, damit nichts weiterläuft, bis ein Mensch draufschaut.
+5. **Mit dem Stand vor dem Apply vergleichen** (nur mit `post_rollback`-Hook):
+   - Ein leerer Plan reicht nicht. Behandelt der Provider null als "nicht anfassen", bleibt ein gerade gesetztes Feld stehen.
+   - Frischen Snapshot nach `state_dir/work/<run_id>/snapshot-after-rollback` ziehen, dann `post_rollback` mit `snapshot-before` und einem leeren Plan ausführen.
+   - Fehlt der Snapshot vorher oder meldet der Hook einen Verstoß, gilt der Rollback als fehlgeschlagen.
+6. **Melden:** Erfolg oder Fehlschlag per Telegram. Bei Fehlschlag setzt der Rollback die STOP-Datei, damit nichts weiterläuft, bis ein Mensch draufschaut.

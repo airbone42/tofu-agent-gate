@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 DEFAULT_CONFIG = "/etc/tofu-agent-gate/gate.yaml"
+HOOK_PHASES = ("snapshot", "pre_apply", "post_apply", "post_rollback", "summary")
 
 
 class ConfigError(ValueError):
@@ -77,7 +78,7 @@ def from_dict(d: dict, source: Path | None = None) -> Config:
         appr = d.get("approval") or {}
         dm = d.get("deadman") or {}
         hooks = d.get("hooks") or {}
-        unknown_hooks = set(hooks) - {"snapshot", "pre_apply", "post_apply", "summary", "env_file", "timeout"}
+        unknown_hooks = set(hooks) - {*HOOK_PHASES, "env_file", "timeout"}
         if unknown_hooks:
             raise ConfigError(f"Unbekannte Hooks {sorted(unknown_hooks)}")
         author = repo.get("author") or {}
@@ -111,7 +112,7 @@ def from_dict(d: dict, source: Path | None = None) -> Config:
             approval_timeout_minutes=int(appr.get("timeout_minutes", 30)),
             deadman_minutes=int(dm.get("minutes", 10)),
             deadman_unit_prefix=dm.get("unit_prefix", "tofu-agent-gate-rollback"),
-            hooks={k: list(v) for k, v in hooks.items() if k in ("snapshot", "pre_apply", "post_apply", "summary") and v},
+            hooks={k: list(v) for k, v in hooks.items() if k in HOOK_PHASES and v},
             hooks_env_file=_p(hooks.get("env_file")),
             hook_timeout=int(hooks.get("timeout", 300)),
             redaction_extra=(d.get("redaction") or {}).get("extra"),

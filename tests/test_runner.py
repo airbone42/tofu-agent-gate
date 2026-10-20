@@ -272,6 +272,89 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue(any("no-bad" in r for r in run.reasons))
         self.assertEqual(self.deadman.scheduled, [])
 
+    def _rollback_hooks(self, post_apply_fails=False):
+        """Snapshot = Kopie des Controllers, post_rollback vergleicht vorher und nachher."""
+        ctl = str(self.controller)
+        log = self.tmp / "post_rollback.log"
+        hooks = {
+            "snapshot": self._hook_script("snap", f"""
+                import os, shutil
+                shutil.copy({ctl!r}, os.path.join(os.environ["GATE_SNAPSHOT_OUT"], "controller.json"))
+            """),
+            "post_rollback": self._hook_script("post_rb", f"""
+                import json, os, sys
+                env = {{k: v for k, v in os.environ.items() if k.startswith("GATE_")}}
+                env["plan"] = json.load(open(env["GATE_PLAN_JSON"]))
+                open({str(log)!r}, "w").write(json.dumps(env))
+                load = lambda d: json.load(open(os.path.join(os.environ[d], "controller.json")))
+                before, after = load("GATE_SNAPSHOT_BEFORE"), load("GATE_SNAPSHOT_AFTER")
+                diff = sorted(a for a in set(before) | set(after) if before.get(a) != after.get(a))
+                print(json.dumps({{"ok": not diff, "violations": [
+                    {{"id": "unexpected-change", "message": a}} for a in diff]}}))
+                sys.exit(1 if diff else 0)
+            """),
+        }
+        if post_apply_fails:
+            hooks["post_apply"] = self._hook_script("post", """
+                import json, sys
+                print(json.dumps({"ok": False, "violations": [{"id": "inv-1", "message": "kaputt"}]}))
+                sys.exit(1)
+            """)
+        return hooks, log
+
+    def _sticky_field_branch(self):
+        """main setzt comment auf null, der Branch setzt ihn. Der Rollback lässt ihn stehen."""
+        host = SEED["dns_records"]["host-1"]
+        self._push_branch("main", {"dns_records": {"host-1": dict(host, comment=None)}})
+        self._push_branch("desired/sticky", {"dns_records": {"host-1": dict(host, comment="vom Agenten")}})
+
+    def test_rollback_check_passes_with_empty_plan(self):
+        hooks, log = self._rollback_hooks()
+        runner = self._runner(hooks=hooks)
+        rec = {"name": "fail.auto.example", "record_type": "A", "value": "FAIL_APPLY"}
+        self._push_branch("desired/fail", self._with("fail", rec))
+        [run] = runner.run_once()
+        self.assertEqual(run.status, "rolled_back", run.reasons)
+        self.assertFalse(self.cfg.stop_file.exists())
+        env = json.loads(log.read_text())
+        self.assertEqual(env["GATE_PHASE"], "post_rollback")
+        self.assertEqual(env["plan"]["resource_changes"], [])
+        rdir = self.cfg.state_dir / "work" / run.run_id
+        self.assertEqual(Path(env["GATE_SNAPSHOT_BEFORE"]), rdir / "snapshot-before")
+        self.assertEqual(Path(env["GATE_SNAPSHOT_AFTER"]), rdir / "snapshot-after-rollback")
+
+    def test_rest_after_rollback_unnoticed_without_check(self):
+        # Ohne post_rollback reicht dem Gate der leere Plan (Live-Test 20.10.2026).
+        self._sticky_field_branch()
+        hooks, _ = self._rollback_hooks(post_apply_fails=True)
+        del hooks["post_rollback"]
+        [run] = self._runner(hooks=hooks).run_once()
+        self.assertEqual(run.status, "rolled_back", run.reasons)
+        self.assertEqual(self._ctl()['unifi_dns_record.this["host-1"]']["comment"], "vom Agenten")
+
+    def test_rest_after_rollback_detected(self):
+        self._sticky_field_branch()
+        hooks, _ = self._rollback_hooks(post_apply_fails=True)
+        [run] = self._runner(hooks=hooks).run_once()
+        self.assertEqual(run.status, "rollback_failed", run.reasons)
+        self.assertTrue(any("weicht ab" in r and 'this["host-1"]' in r for r in run.reasons), run.reasons)
+        self.assertEqual(self._ctl()['unifi_dns_record.this["host-1"]']["comment"], "vom Agenten")
+        self.assertTrue(self.cfg.stop_file.exists())
+        self.assertTrue(any("Rollback fehlgeschlagen" in n for n in self.approver.notes))
+        self.assertIn(run.run_id, self.deadman.cancelled)
+        self.assertIn("desired/sticky", self._branches())
+
+    def test_rollback_check_without_snapshot_before_fails(self):
+        hooks, _ = self._rollback_hooks()
+        runner = self._runner(hooks=hooks)
+        runner.d.git.ensure_clone()
+        run = Run(run_id="r1", branch="desired/x", head="0" * 40, status="applying",
+                  last_good=git("rev-parse", "main", cwd=self.origin))
+        run.save(self.cfg.runs_dir)
+        run = runner.rollback("r1")
+        self.assertEqual(run.status, "rollback_failed")
+        self.assertTrue(any("Snapshot vor dem Apply fehlt" in r for r in run.reasons), run.reasons)
+
     def test_crash_during_apply_recovered_by_deadman(self):
         rec = {"name": "crash.auto.example", "record_type": "A", "value": "CRASH"}
         self._push_branch("desired/crash", self._with("crash", rec))

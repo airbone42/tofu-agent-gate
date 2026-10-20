@@ -438,4 +438,32 @@ class Runner:
         r = tofu.plan_detailed()
         if r.rc != 0:
             return f"Plan nach dem Rollback nicht leer (rc={r.rc})"
+        return self._check_rollback(run, rdir, wt)
+
+    def _check_rollback(self, run: Run, rdir: Path, wt: Path) -> str | None:
+        """Frischen Snapshot mit dem Stand vor dem Apply vergleichen.
+
+        Ein leerer Plan reicht nicht: Behandelt der Provider null als "nicht anfassen",
+        bleibt ein gerade gesetztes Feld nach dem Rollback stehen.
+        """
+        if not self.d.hooks.configured("post_rollback"):
+            return None
+        snap_before = snap_after = None
+        if self.d.hooks.configured("snapshot"):
+            snap_before = rdir / "snapshot-before"
+            if not snap_before.is_dir():
+                return "Snapshot vor dem Apply fehlt, Vergleich nach dem Rollback nicht möglich"
+            snap_after = rdir / "snapshot-after-rollback"
+            shutil.rmtree(snap_after, ignore_errors=True)  # Rest eines abgebrochenen Rollbacks
+            hr = self.d.hooks.snapshot(run.run_id, snap_after)
+            if not hr.ok:
+                return "Snapshot nach dem Rollback fehlgeschlagen: " + "; ".join(hr.messages())
+        # Nach dem Rollback ist keine Änderung erwartet, daher ein leerer Plan.
+        plan_path = rdir / "rollback-check.json"
+        plan_path.write_text(json.dumps({"format_version": "1.2", "resource_changes": []}), encoding="utf-8")
+        os.chmod(plan_path, 0o600)
+        hr = self.d.hooks.run("post_rollback", run.run_id, plan_json=plan_path, repo_dir=wt,
+                              snapshot_before=snap_before, snapshot_after=snap_after)
+        if not hr.ok:
+            return "Stand nach dem Rollback weicht ab: " + "; ".join(hr.messages())
         return None
