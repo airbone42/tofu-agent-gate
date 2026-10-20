@@ -20,10 +20,12 @@ Status: early (0.1.0.dev0). Python 3.13, standard library plus PyYAML.
 | State leaks | Backend path set by a runner-written override file, state encryption recommended and enforced in HCL |
 | Approving something other than what gets applied | Approval is bound to the SHA-256 of the binary plan file, re-checked right before `apply` |
 | Replayed or forged Telegram clicks | User ID, chat ID, message ID, open request, expiry and plan hash are all checked, every approval is single-use and persisted |
-| Agent text in approval messages | Sent without `parse_mode`, shown separately as unverified agent reasoning, truncated |
+| Agent text in approval messages | Messages are HTML with every dynamic part escaped. Only the first line of the agent's commit message is shown, separately, marked as unverified and truncated |
+| A change is acceptable only as an exception (e.g. new access to a protected zone) | A `pre_apply` hook can report findings with `severity: approve`: the change is never applied automatically, the approval shows each warning, and `post_apply` receives the approved findings |
 | Secrets in messages and logs | Plan-sensitive values are masked, plus generic redaction (private keys, tokens) and an optional domain-specific redaction hook |
 | Apply breaks connectivity or a provider silently writes something else | Post-apply health checks: empty re-plan, external snapshot diff and invariant hooks, automatic rollback to the last good commit |
 | Runner hangs during apply | Dead-man timer (`systemd-run`) kills the run and rolls back |
+| Rollback leaves something behind (provider treats null as "keep") | Optional `post_rollback` hook compares a fresh snapshot with the one taken before the apply |
 | Rollback itself fails | Runner writes a STOP file and stops processing until a human looks |
 
 Policies and hook configuration live on the runner host, never in the repository. Run the gate from a release tag, not from a branch.

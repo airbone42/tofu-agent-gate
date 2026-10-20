@@ -22,4 +22,5 @@ jobs:
         with:
           fetch-depth: 0
       - name: gitleaks
-        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.24.0 git /repo --redact -v
+        # Lauf als Runner-User, sonst lehnt git die gemountete Arbeitskopie als "dubious ownership" ab.
+        run: docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.24.0 git /repo --redact -v --exit-code 1
