@@ -100,7 +100,7 @@ class AcceptDeclineTest(Base):
         self.assertEqual(len(self.tg.edited), 1)
         edit = self.tg.edited[0]
         self.assertEqual(edit["message_id"], self.tg.sent[0]["message_id"])
-        self.assertIn("angenommen", edit["text"])
+        self.assertIn("<b>Freigegeben</b>", edit["text"])
         self.assert_buttons_removed(edit)
         rec = self.approver.load_record(res.request_id)
         self.assertEqual(rec["status"], "approved")
@@ -112,7 +112,7 @@ class AcceptDeclineTest(Base):
         self.assertFalse(res.approved)
         self.assertEqual(res.reason, DECLINED)
         self.assertEqual(self.hints(), ["Abgelehnt"])
-        self.assertIn("abgelehnt", self.tg.edited[0]["text"])
+        self.assertIn("<b>Abgelehnt</b>", self.tg.edited[0]["text"])
         self.assert_buttons_removed(self.tg.edited[0])
         self.assertEqual(self.approver.load_record(res.request_id)["status"], "declined")
 
@@ -123,12 +123,14 @@ class AcceptDeclineTest(Base):
         params = sent["params"]
         self.assertEqual(params["chat_id"], CHAT)
         text = params["text"]
-        self.assertTrue(text.startswith("Freigabe angefragt"))
-        self.assertIn(HASH_A[:12], text)
+        self.assertTrue(text.startswith("<b>Freigabe nötig</b>"))
+        self.assertEqual(params["parse_mode"], "HTML")
+        self.assertIn("Plan " + HASH_A[:8], text)
         self.assertNotIn(HASH_A, text)
+        self.assertNotIn(res.request_id, text)
         self.assertIn("2 Änderungen", text)
-        self.assertIn(REASON_LABEL + "\nDNS für neuen Host", text)
-        self.assertTrue(text.endswith("https://git.example/c/1"))
+        self.assertIn("<i>" + REASON_LABEL + "</i>\nDNS für neuen Host", text)
+        self.assertIn('<a href="https://git.example/c/1">Commit</a>', text)
         buttons = params["reply_markup"]["inline_keyboard"][0]
         self.assertEqual([b["text"] for b in buttons], ["Accept", "Decline"])
         self.assertEqual(
@@ -142,16 +144,22 @@ class AcceptDeclineTest(Base):
         th.assert_called_with(8)
         self.assertEqual(res.request_id, "00ff00ff00ff00ff")
 
-    def test_no_parse_mode_anywhere(self) -> None:
+    def test_agent_text_cannot_inject_markup(self) -> None:
         self.tg.script = [lambda m: m.click("a", from_id=OWNER)]
-        self.ask(agent_reason="<b>fett</b> *x*")
-        self.approver.notify("Lauf fertig")
+        self.ask(agent_reason='<b>fett</b> <a href="http://evil">x</a> **y**\nzweite Zeile')
+        self.approver.notify('Lauf <a href="http://evil">fertig</a>')
         for method in ("sendMessage", "editMessageText"):
             calls = self.tg.calls_of(method)
             self.assertTrue(calls)
             for p in calls:
-                self.assertNotIn("parse_mode", p)
+                self.assertEqual(p.get("parse_mode"), "HTML")
                 self.assertNotIn("entities", p)
+                self.assertNotIn('<a href="http://evil"', p["text"])
+                self.assertNotIn("<b>fett", p["text"])
+        sent = self.tg.calls_of("sendMessage")[0]["text"]
+        self.assertIn("&lt;b&gt;fett&lt;/b&gt;", sent)
+        self.assertIn("**y**", sent)  # Begründung: keine Fett-Umwandlung
+        self.assertNotIn("zweite Zeile", sent)  # nur die erste Zeile
 
 
 class ForeignClickTest(Base):
@@ -163,7 +171,7 @@ class ForeignClickTest(Base):
         self.assertEqual(self.hints(), [INVALID_HINT])
         # einzige Bearbeitung ist die Ablaufmeldung
         self.assertEqual(len(self.tg.edited), 1)
-        self.assertIn("abgelaufen", self.tg.edited[0]["text"])
+        self.assertIn("Abgelaufen", self.tg.edited[0]["text"])
         self.assertEqual(self.approver.load_record(res.request_id)["status"], "expired")
 
     def test_foreign_user_rejected(self) -> None:
@@ -207,7 +215,7 @@ class ExpiryTest(Base):
         self.assertLess(time.monotonic() - real_start, 5)
         self.assertEqual(len(self.tg.edited), 1)
         edit = self.tg.edited[0]
-        self.assertIn("abgelaufen", edit["text"])
+        self.assertIn("Abgelaufen", edit["text"])
         self.assert_buttons_removed(edit)
         self.assertEqual(self.approver.load_record(res.request_id)["status"], "expired")
         # Long Polling mit allowed_updates und Poll-Timeout höchstens 50
@@ -336,14 +344,13 @@ class TextTest(Base):
         self.ask(summary="x" * 10_000, agent_reason="r" * 5000, link=link)
         text = self.tg.sent[0]["params"]["text"]
         self.assertLessEqual(tg_len(text), 4096)
-        self.assertTrue(text.endswith(link))
-        self.assertIn("gekürzt", text)
-        reason = text.split(REASON_LABEL + "\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn(f'<a href="{link}">Commit</a>', text)
+        reason = text.split(REASON_LABEL + "</i>\n", 1)[1].split("\n\n", 1)[0]
         self.assertLessEqual(len(reason), MAX_REASON)
         self.assertTrue(reason.startswith("rrrr"))
         for edit in self.tg.edited:
             self.assertLessEqual(tg_len(edit["text"]), 4096)
-            self.assertTrue(edit["text"].endswith(link))
+            self.assertIn(f'<a href="{link}">Commit</a>', edit["text"])
 
     def test_truncation_counts_utf16(self) -> None:
         self.tg.script = [lambda m: m.click("a", from_id=OWNER)]
@@ -360,7 +367,8 @@ class TextTest(Base):
 class RedactionTest(Base):
     def test_pem_key_not_sent(self) -> None:
         self.tg.script = [lambda m: m.click("a", from_id=OWNER)]
-        self.ask(summary="Key: " + FAKE_PEM, agent_reason="Begründung mit\n" + FAKE_PEM + "\nEnde")
+        # Key in der ersten Zeile der Begründung: wird vor dem Kürzen auf eine Zeile redigiert
+        self.ask(summary="Key: " + FAKE_PEM, agent_reason=FAKE_PEM + "\nEnde")
         self.approver.notify("Fertig, Token " + TOKEN + " und " + FAKE_PEM)
         texts = self.tg.outgoing_texts()
         self.assertTrue(texts)
@@ -368,8 +376,9 @@ class RedactionTest(Base):
             self.assertNotIn("PRIVATE KEY", text)
             self.assertNotIn("b3BlbnNzaC1rZXktdjEA", text)
             self.assertNotIn(TOKEN, text)
-        self.assertIn("<redacted>", self.tg.sent[0]["params"]["text"])
-        self.assertIn("Ende", self.tg.sent[0]["params"]["text"])
+        sent = self.tg.sent[0]["params"]["text"]
+        self.assertIn("&lt;redacted&gt;", sent.split("ungeprüft):</i>", 1)[1])
+        self.assertIn("Key: &lt;redacted&gt;", sent)
 
     def test_long_reason_with_key_cut_after_redaction(self) -> None:
         reason = "a" * 790 + FAKE_PEM

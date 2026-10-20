@@ -196,7 +196,7 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(run.status, "rejected")
         self.assertNotIn("apply", [c[0] for c in FakeTofu.calls if self.tmp.as_posix() in Path(c[1]).as_posix()])
         self.assertEqual(self.deadman.scheduled, [])
-        self.assertTrue(any("abgelehnt" in n for n in self.approver.notes))
+        self.assertTrue(any("Abgelehnt" in n for n in self.approver.notes))
 
     def test_hcl_change_rejected_before_plan(self):
         FakeTofu.calls.clear()

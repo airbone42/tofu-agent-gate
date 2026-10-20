@@ -7,6 +7,7 @@ Replay-Schutz und Ablauf auch über Neustarts greifen.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
@@ -28,6 +29,7 @@ MAX_TEXT = 4096
 MAX_REASON = 800
 HASH_SHOWN = 12
 REASON_LABEL = "Begründung des Agenten (ungeprüft):"
+MAX_REASON_LINE = 300
 INVALID_HINT = "Nicht gültig"
 
 # Gründe in ApprovalResult.reason
@@ -69,6 +71,17 @@ def cut(text: str, limit: int, marker: str = "…") -> str:
         out.append(ch)
         used += width
     return "".join(out).rstrip() + marker
+
+
+def esc(text: str) -> str:
+    """HTML für Telegram maskieren. Danach wird nur **x** zu Fettdruck."""
+    return html.escape(text, quote=False)
+
+
+def light_markup(text: str) -> str:
+    """Klartext maskieren, **x** in <b>x</b> wandeln. Erzeugt nie Links oder andere Tags."""
+    out = esc(text)
+    return re.sub(r"\*\*([^*\n]{1,200})\*\*", r"<b>\1</b>", out)
 
 
 def _atomic_write_json(path: Path, data: Any) -> None:
@@ -166,13 +179,15 @@ class Approver:
     # ---------- Ausgehendes, immer redigiert ----------
 
     def _out(self, text: str) -> str:
-        return cut(self.redact(text), MAX_TEXT)
+        # text ist bereits HTML (aus compose oder notify). Kürzen nur als letzte Sicherung.
+        return text if tg_len(text) <= MAX_TEXT else cut(text, MAX_TEXT)
 
     def _send(self, text: str, reply_markup: dict | None = None) -> Any:
         return self.api.call(
             "sendMessage",
             chat_id=self.owner_chat_id,
             text=self._out(text),
+            parse_mode="HTML",
             reply_markup=reply_markup,
             link_preview_options={"is_disabled": True},
         )
@@ -186,6 +201,7 @@ class Approver:
                 chat_id=self.owner_chat_id,
                 message_id=message_id,
                 text=self._out(text),
+                parse_mode="HTML",
                 reply_markup=_NO_BUTTONS,
                 link_preview_options={"is_disabled": True},
             )
@@ -205,9 +221,9 @@ class Approver:
             log.warning("answerCallbackQuery fehlgeschlagen: %s", self.redact(str(exc)))
 
     def notify(self, text: str) -> bool:
-        """Einfache Meldung an den Owner-Chat. False bei Fehler, kein Absturz."""
+        """Meldung an den Owner-Chat. Klartext, **x** wird fett. False bei Fehler, kein Absturz."""
         try:
-            self._send(text)
+            self._send(light_markup(cut(self.redact(text), MAX_TEXT - 200)))
             return True
         except (TelegramError, OSError) as exc:
             log.warning("notify fehlgeschlagen: %s", self.redact(str(exc)))
@@ -226,28 +242,26 @@ class Approver:
         link: str | None = None,
         info: Iterable[str] = (),
     ) -> str:
-        """Nachrichtentext bauen, höchstens MAX_TEXT, Bestandteile vorab redigiert."""
+        """Lesbare HTML-Nachricht, höchstens MAX_TEXT. Alles Dynamische redigiert und maskiert.
+
+        summary ist Klartext, **x** wird fett. Von agent_reason zählt nur die erste Zeile.
+        """
         r = self.redact
-        head = "\n".join([header, "", f"Plan: {plan_hash[:HASH_SHOWN]}", f"Anfrage: {request_id}", *info])
-        body = r(summary or "").strip()
-        tail: list[str] = []
+        parts = [f"<b>{esc(header)}</b>"]
+        body = cut(r(summary or "").strip(), MAX_TEXT - 1200)
+        if body:
+            parts.append(light_markup(body))
         if agent_reason:
-            # erst redigieren, dann kürzen: ein abgeschnittener Key wäre sonst schwer zu erkennen
-            tail.append(REASON_LABEL + "\n" + cut(r(agent_reason).strip(), MAX_REASON))
+            first = next((ln.strip() for ln in r(agent_reason).splitlines() if ln.strip()), "")
+            if first:
+                parts.append(f"<i>{esc(REASON_LABEL)}</i>\n{esc(cut(first, MAX_REASON_LINE))}")
+        foot = [f"Plan {esc(plan_hash[:8])}", *[esc(i) for i in info]]
         link_text = r(link).strip() if link else ""
-        if link_text:
-            tail.append(link_text)
-
-        def build(middle: str) -> str:
-            return "\n\n".join(p for p in (head, middle, *tail) if p)
-
-        text = build(body)
-        if tg_len(text) > MAX_TEXT:
-            note = "[gekürzt, vollständig unter dem Link]" if link_text else "[gekürzt]"
-            fixed = tg_len(build("x")) - 1
-            budget = MAX_TEXT - fixed - tg_len(note) - 1
-            text = build((cut(body, max(budget, 0)) + "\n" + note).strip())
-        return cut(r(text), MAX_TEXT)
+        if link_text.startswith(("http://", "https://")):
+            foot.append(f'<a href="{html.escape(link_text, quote=True)}">Commit</a>')
+        parts.append("<i>" + " · ".join(foot) + "</i>")
+        text = "\n\n".join(parts)
+        return text if tg_len(text) <= MAX_TEXT else cut(text, MAX_TEXT)
 
     # ---------- Freigabe ----------
 
@@ -281,7 +295,7 @@ class Approver:
         content = {"request_id": rid, "plan_hash": plan_hash, "summary": summary,
                    "agent_reason": agent_reason, "link": link}
         minutes = max(1, round(float(timeout_s) / 60))
-        text = self.compose("Freigabe angefragt", info=[f"Gültig: {minutes} min"], **content)
+        text = self.compose("Freigabe nötig", info=[f"gültig {minutes} min"], **content)
         markup = {"inline_keyboard": [[
             {"text": "Accept", "callback_data": f"{rid}:a"},
             {"text": "Decline", "callback_data": f"{rid}:d"},
@@ -308,11 +322,11 @@ class Approver:
                     self._save_record(current)
                 except OSError as exc:
                     log.warning("Anfrage nicht gespeichert: %s", self.redact(str(exc)))
-            self._edit(message_id, self.compose("Freigabe abgelaufen, abgelehnt", **content))
+            self._edit(message_id, self.compose("Abgelaufen, nicht freigegeben", **content))
             return ApprovalResult(False, TIMEOUT, rid)
 
         approved = decision == "a"
-        header = "Freigabe angenommen (Accept)" if approved else "Freigabe abgelehnt (Decline)"
+        header = "Freigegeben" if approved else "Abgelehnt"
         self._edit(message_id, self.compose(header, **content))
         return ApprovalResult(approved, ACCEPTED if approved else DECLINED, rid)
 

@@ -53,6 +53,19 @@ class Hooks:
             return HookResult(ok=False, violations=violations or [{"id": phase, "message": "Verstoß ohne Details"}])
         return HookResult(ok=False, violations=violations, error=f"Hook {phase} rc={r.rc}: {r.tail(3)}")
 
+    def text(self, phase: str, run_id: str, **paths: Path | None) -> str | None:
+        """Hook, der Text liefert (z. B. summary). None bei Fehler oder ohne Hook."""
+        argv = self.cfg.hooks.get(phase)
+        if not argv:
+            return None
+        env = dict(self.env, GATE_RUN_ID=run_id, GATE_PHASE=phase)
+        for key, value in paths.items():
+            if value is not None:
+                env[f"GATE_{key.upper()}"] = str(value)
+        r = proc.run(argv, env=env, timeout=60)
+        out = r.out.strip()
+        return out if r.ok and out else None
+
     def snapshot(self, run_id: str, out: Path) -> HookResult:
         out.mkdir(parents=True, exist_ok=True, mode=0o700)
         return self.run("snapshot", run_id, snapshot_out=out)

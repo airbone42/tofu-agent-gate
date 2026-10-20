@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from collections.abc import Callable
@@ -21,6 +22,21 @@ from .policy import Decision, Policy, classify
 from .redact import redact_data
 
 log = logging.getLogger(__name__)
+
+
+def short_reason(text: str | None, limit: int = 300) -> str:
+    """Technische Fehlertexte auf eine verständliche Zeile kürzen."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    head = lines[0].rstrip(":")
+    api = next((m.group(0) for ln in lines if (m := re.search(r"api\.err\.\w+", ln))), None)
+    if api:
+        out = f"{head}: UniFi lehnt ab ({api})"
+    else:
+        err = next((ln for ln in lines if ln.startswith("Error:")), None)
+        out = f"{head}: {err[6:].strip()}" if err and err != lines[0] else head
+    return out if len(out) <= limit else out[: limit - 1] + "…"
 
 
 class Approver(Protocol):
@@ -189,7 +205,7 @@ class Runner:
             return self._process(run, br, rdir, wt)
         except Exception as e:
             log.exception("Lauf %s abgebrochen", run.run_id)
-            self._notify(f"Gate: Fehler in {br.name}: {type(e).__name__}: {e}")
+            self._notify(f"⚠️ **Fehler im Gate**: {br.name}\n{short_reason(f'{type(e).__name__}: {e}')}")
             return self._finish(run, "error", f"{type(e).__name__}: {e}")
         finally:
             self.d.git.remove_worktree(wt)
@@ -230,7 +246,8 @@ class Runner:
 
         dec = classify(plan_json, self.d.policy)
         run.level = dec.level
-        run.summary = planlib.summarize(dec.changes)
+        run.summary = (self.d.hooks.text("summary", run.run_id, plan_json=plan_path, repo_dir=wt)
+                       or planlib.summarize(dec.changes))
         run.reasons += dec.reasons
         run.save(self.cfg.runs_dir)
 
@@ -240,7 +257,7 @@ class Runner:
         if not dec.changes:
             git.push_main(run.merge_commit)
             git.delete_branch(br.name)
-            self._notify(f"Gate: {br.name} ohne Änderungen übernommen.")
+            self._notify(f"☑️ **Ohne Änderung übernommen**: {br.name}")
             return self._finish(run, "noop")
 
         snap_before = None
@@ -259,14 +276,14 @@ class Runner:
             if not self.d.approver:
                 return self._reject(run, "Freigabe nötig, aber kein Freigabekanal konfiguriert")
             link = self.cfg.repo.commit_url.format(sha=br.head) if self.cfg.repo.commit_url else None
-            header = f"Branch {br.name}\nStufe: {dec.level}\n\n"
             res = self.d.approver.request(
-                plan_hash=run.plan_hash, summary=header + run.summary,
+                plan_hash=run.plan_hash, summary=f"{run.summary}\n\nBranch {br.name}",
                 agent_reason=git.message(br.head), link=link,
                 timeout_s=self.cfg.approval_timeout_minutes * 60,
             )
             if not getattr(res, "approved", False):
-                self._notify(f"Gate: {br.name} nicht freigegeben ({getattr(res, 'reason', '?')}).")
+                why = {"declined": "abgelehnt", "timeout": "keine Antwort"}.get(getattr(res, "reason", ""), "")
+                self._notify(f"🚫 **Nicht freigegeben**: {br.name}" + (f" ({why})" if why else ""))
                 return self._finish(run, "declined", getattr(res, "reason", None))
 
         return self._apply(run, br, rdir, wt, tofu, planfile, plan_path, snap_before)
@@ -295,8 +312,8 @@ class Runner:
 
     def _reject(self, run: Run, reason: str | None) -> Run:
         self._finish(run, "rejected", reason)
-        why = "\n".join(run.reasons[-5:]) or "ohne Grund"
-        self._notify(f"Gate: {run.branch} abgelehnt.\n{why}")
+        why = short_reason(run.reasons[-1] if run.reasons else "") or "ohne Grund"
+        self._notify(f"❌ **Abgelehnt**: {run.branch}\n{why}")
         return run
 
     # ------------------------------------------------------------ Apply
@@ -328,9 +345,9 @@ class Runner:
             self._push_merge(run, br, wt)
         except GitError as e:
             # Änderung ist live und geprüft, nur der Merge fehlt. Kein Rollback.
-            self._notify(f"Gate: {br.name} angewendet, aber Merge nach main fehlgeschlagen: {e}")
+            self._notify(f"⚠️ **Angewendet, aber nicht gemergt**: {br.name}\n{short_reason(str(e))}")
             return self._finish(run, "applied_unmerged", str(e))
-        self._notify(f"Gate: {br.name} angewendet.\n{run.summary}")
+        self._notify(f"✅ **Angewendet**: {br.name}\n{run.summary}")
         return self._finish(run, "applied")
 
     def _health(self, run: Run, wt: Path, tofu, plan_path: Path, snap_before: Path | None,
@@ -380,7 +397,6 @@ class Runner:
         run.status = "rolling_back"
         run.pid = os.getpid()
         run.save(self.cfg.runs_dir)
-        self._notify(f"Gate: Rollback für {run.branch} gestartet.\nGrund: {cause}")
         rdir = self._run_dir(run.run_id)
         wt = rdir / "rollback-tree"
         try:
@@ -394,9 +410,10 @@ class Runner:
         if problem:
             self.cfg.stop_file.parent.mkdir(parents=True, exist_ok=True)
             self.cfg.stop_file.write_text(f"Rollback {run.run_id} fehlgeschlagen: {problem}\n", encoding="utf-8")
-            self._notify(f"Gate: ROLLBACK FEHLGESCHLAGEN für {run.branch}. STOP gesetzt.\n{problem}")
+            self._notify(f"🛑 **Rollback fehlgeschlagen, Gate gestoppt**: {run.branch}\n"
+                         f"Grund: {short_reason(cause)}\nRollback: {short_reason(problem)}")
             return self._finish(run, "rollback_failed", problem)
-        self._notify(f"Gate: Rollback für {run.branch} erfolgreich, Stand {run.last_good[:10]}.")
+        self._notify(f"↩️ **Zurückgerollt**: {run.branch}\nGrund: {short_reason(cause)}")
         return self._finish(run, "rolled_back")
 
     def _do_rollback(self, run: Run, rdir: Path, wt: Path) -> str | None:
