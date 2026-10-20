@@ -199,7 +199,7 @@ def summarize(chs: list[Change], max_fields: int = 8) -> str:
             if computed:
                 lines.append(f"  ({computed} Felder werden erst beim Apply berechnet)")
         elif c.action == "create":
-            fields = [f for f in diff_fields(c) if f[2] not in (None, "", [], False)]
+            fields = [f for f in diff_fields(c) if f[2] not in (None, "", [], False, UNKNOWN)]
             for key, _, a in fields[:max_fields]:
                 lines.append(f"  {key} = {_short(a)}")
     return "\n".join(lines)

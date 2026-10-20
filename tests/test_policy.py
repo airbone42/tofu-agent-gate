@@ -219,6 +219,13 @@ class SummaryTest(unittest.TestCase):
         self.assertIn("update unifi_firewall_policy.x (iot to isolated)", text)
         self.assertIn("protocol: all -> tcp", text)
 
+    def test_create_summary_hides_unknown_fields(self):
+        after = policy_obj(None, "x", "iot", "isolated")
+        c = rc("unifi_firewall_policy.x", ["create"], None, after, after_unknown={"index": True, "id": True})
+        text = planlib.summarize(planlib.changes(plan(c)))
+        self.assertNotIn("<unknown>", text)
+        self.assertIn("action = ALLOW", text)
+
     def test_summary_collapses_unknown_fields(self):
         before = policy_obj("p1", "x", "iot", "isolated", index=10000)
         after = dict(before, protocol="tcp")
