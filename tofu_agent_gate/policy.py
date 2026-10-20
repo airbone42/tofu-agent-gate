@@ -6,7 +6,6 @@ aller Einzeländerungen. Die Policy-Datei liegt beim Runner, nie im Repo.
 
 from __future__ import annotations
 
-import fnmatch
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +44,12 @@ class Decision:
             "reasons": self.reasons,
             "items": [vars(i) for i in self.items],
         }
+
+
+def glob_match(pattern: str, value: str) -> bool:
+    """Nur * und ? sind Platzhalter. Eckige Klammern (z. B. this["git"]) gelten wörtlich."""
+    rx = "".join(".*" if c == "*" else "." if c == "?" else re.escape(c) for c in pattern)
+    return re.fullmatch(rx, value, re.S) is not None
 
 
 def _max(a: str, b: str) -> str:
@@ -116,9 +121,9 @@ class Matcher:
 
     def matches(self, c: planlib.Change, unknown_matches: bool) -> bool:
         """unknown_matches: Wie ein unbekannter Wert zählt (forbidden: True)."""
-        if self.type and not fnmatch.fnmatchcase(c.type, self.type):
+        if self.type and not glob_match(self.type, c.type):
             return False
-        if self.address and not fnmatch.fnmatchcase(c.address, self.address):
+        if self.address and not glob_match(self.address, c.address):
             return False
         if self.actions and c.action not in self.actions:
             return False
@@ -200,7 +205,7 @@ class Policy:
 
 
 def _type_in(t: str, patterns: list[str]) -> bool:
-    return any(fnmatch.fnmatchcase(t, p) for p in patterns)
+    return any(glob_match(p, t) for p in patterns)
 
 
 def _check_providers(plan: dict, pol: Policy) -> list[str]:

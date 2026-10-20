@@ -101,6 +101,20 @@ class ClassifyTest(unittest.TestCase):
         p = plan(rc("unifi_firewall_policy.protected_core", ["update"], after, dict(after, enabled=False)))
         self.assertEqual(classify(p, pol()).level, "reject")
 
+    def test_forbidden_address_with_brackets_is_literal(self):
+        p2 = pol(forbidden=[{"address": 'unifi_network.this["git"]'}])
+        obj = {"name": "git", "vlan": 10}
+        hit = plan(rc('unifi_network.this["git"]', ["update"], obj, dict(obj, vlan=11), rtype="unifi_network"))
+        other = plan(rc('unifi_network.this["g"]', ["update"], obj, dict(obj, vlan=11), rtype="unifi_network"))
+        self.assertEqual(classify(hit, p2).level, "reject")
+        self.assertEqual(classify(other, p2).level, "approval")
+
+    def test_glob_star_still_works(self):
+        from tofu_agent_gate.policy import glob_match
+        self.assertTrue(glob_match("unifi_wan*", "unifi_wan_x"))
+        self.assertTrue(glob_match('unifi_network.this["*"]', 'unifi_network.this["tor"]'))
+        self.assertFalse(glob_match("unifi_wan*", "unifi_network"))
+
     def test_import_of_forbidden_object_rejected(self):
         obj = policy_obj("p9", "mgmt in", "lan", "mgmt")
         p = plan(rc("unifi_firewall_policy.m", ["no-op"], obj, obj, importing="p9"))
