@@ -236,6 +236,21 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(self._main_data(), SEED)
         self.assertIn("desired/fail", self._branches())
         self.assertFalse(self.cfg.stop_file.exists())
+        # Dead-Man: beim Apply geplant, vor dem Rollback neu geplant, am Ende abgebrochen
+        self.assertEqual(self.deadman.scheduled, [run.run_id, run.run_id])
+        self.assertEqual(self.deadman.cancelled, [run.run_id, run.run_id])
+
+    def test_rollback_continues_if_deadman_cannot_be_rearmed(self):
+        def schedule(run_id):
+            if self.deadman.scheduled:
+                raise RuntimeError("systemd-run fehlgeschlagen")
+            self.deadman.scheduled.append(run_id)
+        self.deadman.schedule = schedule
+        rec = {"name": "fail.auto.example", "record_type": "A", "value": "FAIL_APPLY"}
+        self._push_branch("desired/fail", self._with("fail", rec))
+        [run] = self._runner().run_once()
+        self.assertEqual(run.status, "rolled_back", run.reasons)
+        self.assertNotIn('unifi_dns_record.this["fail"]', self._ctl())
 
     def test_silent_provider_error_detected_and_rolled_back(self):
         rec = {"name": "drift.auto.example", "record_type": "A", "value": "SILENT_DRIFT"}

@@ -353,7 +353,7 @@ class Runner:
         if problem:
             run.reasons.append(problem)
             run.save(self.cfg.runs_dir)
-            return self._rollback_locked(run, cause=problem)
+            return self._rollback_locked(run, cause=problem, rearm=True)
 
         self.d.deadman.cancel(run.run_id)
         try:
@@ -409,10 +409,19 @@ class Runner:
         with proc.file_lock(self.cfg.lock_file, wait=120):
             return self._rollback_locked(run, cause="Dead-Man-Timer abgelaufen")
 
-    def _rollback_locked(self, run: Run, cause: str) -> Run:
+    def _rollback_locked(self, run: Run, cause: str, rearm: bool = False) -> Run:
         run.status = "rolling_back"
         run.pid = os.getpid()
         run.save(self.cfg.runs_dir)
+        if rearm:
+            # Rollback im Lauf selbst: Der Timer läuft seit dem Apply. Apply, Health-Checks
+            # und Rollback mit zweitem Snapshot können zusammen länger dauern. Ohne neuen
+            # Timer würde der Dead-Man einen gesunden Rollback mittendrin beenden.
+            self.d.deadman.cancel(run.run_id)
+            try:
+                self.d.deadman.schedule(run.run_id)
+            except Exception as e:  # noqa: BLE001, Rollback geht trotzdem weiter
+                log.warning("Dead-Man für Rollback %s nicht neu geplant: %s", run.run_id, e)
         rdir = self._run_dir(run.run_id)
         wt = rdir / "rollback-tree"
         try:
