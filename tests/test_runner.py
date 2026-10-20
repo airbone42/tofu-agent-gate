@@ -50,6 +50,7 @@ class FakeApprover:
         self.answer = answer
         self.requests = []
         self.notes = []
+        self.on_notify = None
 
     def request(self, **kw):
         self.requests.append(kw)
@@ -57,6 +58,8 @@ class FakeApprover:
 
     def notify(self, text):
         self.notes.append(text)
+        if self.on_notify:
+            self.on_notify(text)
 
 
 class FakeDeadman:
@@ -390,6 +393,52 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(run.status, "applied", run.reasons)
         self.assertIn("h", self._main_data()["dns_records"])
         self.assertIn("a: 1", git("show", "main:state/x.yaml", cwd=self.origin))
+
+    def test_second_branch_planned_on_merged_first(self):
+        # Beide Branches entstehen vom selben main. B muss gegen main mit A geplant werden,
+        # sonst nimmt der Apply von B den Eintrag aus A wieder weg.
+        rec_a = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        rec_b = {"name": "host-3.auto.example", "record_type": "A", "value": "198.51.100.3"}
+        self._push_branch("desired/a", self._with("host-2", rec_a))
+        git("checkout", "-q", "-B", "desired/b", "origin/main", cwd=self.agent)
+        (self.agent / "tofu" / "dns-b.auto.tfvars.json").write_text(json.dumps({"dns_records": {"host-3": rec_b}}))
+        git("add", "-A", cwd=self.agent)
+        git("commit", "-q", "-m", "Agent: host-3", cwd=self.agent)
+        git("push", "-q", "origin", "HEAD:refs/heads/desired/b", cwd=self.agent)
+        runs = self.runner.run_once()
+        self.assertEqual([r.status for r in runs], ["applied", "applied"], [r.reasons for r in runs])
+        self.assertEqual(self._ctl()['unifi_dns_record.this["host-2"]'], rec_a)
+        self.assertEqual(self._ctl()['unifi_dns_record.this["host-3"]'], rec_b)
+        self.assertIn("host-2", self._main_data()["dns_records"])
+        self.assertEqual(runs[1].last_good, git("rev-parse", "main^", cwd=self.origin))
+
+    def test_main_moved_between_branches_is_fetched(self):
+        # Nach Branch A landet von außen ein weiterer Eintrag auf main. B muss darauf aufsetzen.
+        rec_a = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        rec_b = {"name": "host-3.auto.example", "record_type": "A", "value": "198.51.100.3"}
+        rec_x = {"name": "host-9.auto.example", "record_type": "A", "value": "198.51.100.9"}
+        self._push_branch("desired/a", self._with("host-2", rec_a))
+        git("checkout", "-q", "-B", "desired/b", "origin/main", cwd=self.agent)
+        (self.agent / "tofu" / "dns-b.auto.tfvars.json").write_text(json.dumps({"dns_records": {"host-3": rec_b}}))
+        git("add", "-A", cwd=self.agent)
+        git("commit", "-q", "-m", "Agent: host-3", cwd=self.agent)
+        git("push", "-q", "origin", "HEAD:refs/heads/desired/b", cwd=self.agent)
+        other = self.tmp / "human"
+
+        def human_pushes(text):
+            if "desired/a" not in text or other.exists():
+                return
+            git("clone", "-q", str(self.origin), str(other), cwd=self.tmp)
+            (other / "tofu" / "dns-x.auto.tfvars.json").write_text(json.dumps({"dns_records": {"host-9": rec_x}}))
+            git("add", "-A", cwd=other)
+            git("commit", "-q", "-m", "von Hand", cwd=other)
+            git("push", "-q", "origin", "HEAD:main", cwd=other)
+
+        self.approver.on_notify = human_pushes
+        runs = self.runner.run_once()
+        self.assertEqual([r.status for r in runs], ["applied", "applied"], [r.reasons for r in runs])
+        self.assertEqual(runs[1].last_good, git("rev-parse", "HEAD", cwd=other))
+        self.assertEqual(set(self._ctl()), {f'unifi_dns_record.this["{k}"]' for k in ("host-1", "host-2", "host-3", "host-9")})
 
     def test_delete_is_auto_for_allowed_type(self):
         self._push_branch("desired/del", {"dns_records": {}})

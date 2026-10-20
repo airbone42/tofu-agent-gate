@@ -216,6 +216,8 @@ class Runner:
             return self._reject(run, f"Ungültiger Branch-Name {br.name}")
 
         main_ref = f"origin/{self.cfg.repo.main}"
+        # main kann sich seit dem Fetch in _run_locked bewegt haben (voriger Branch, Snapshot-Commit).
+        git.fetch()
         run.last_good = git.rev(main_ref)
         bad = git.disallowed_paths(main_ref, br.head)
         if bad:
