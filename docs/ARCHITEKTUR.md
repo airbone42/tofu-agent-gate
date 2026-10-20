@@ -35,6 +35,7 @@ Generisches Gate um OpenTofu für Änderungen, die Agenten vorschlagen. Nichts h
 state_dir: /var/lib/tofu-agent-gate        # Läufe, Freigaben, Offsets, Backups
 stop_file: /etc/tofu-agent-gate/STOP
 lock_file: /run/tofu-agent-gate.lock
+keep_work_dirs: 30                         # Arbeitsordner (Pläne, Snapshots) abgeschlossener Läufe
 
 repo:
   url: ssh://git@git.example/infra/config.git

@@ -59,6 +59,7 @@ tofu-agent-gate classify plan.json --policy policy.yaml   # dry run of the polic
 tofu-agent-gate run-once                                   # process new desired/* branches
 tofu-agent-gate rollback <run-id>                          # used by the dead-man timer
 tofu-agent-gate status
+tofu-agent-gate notify "text" --key unit --min-interval 3600   # throttled message, e.g. from systemd OnFailure=
 ```
 
 ## Policy example

@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
+import time
 from pathlib import Path
 
 from . import config as configlib
@@ -27,6 +29,33 @@ def build_approver(cfg: configlib.Config, redact):
 
     tg = from_env_file(cfg.telegram_env)
     return Approver(tg.api(), tg.owner_id, tg.chat_id, cfg.state_dir / "approvals", redact=redact)
+
+
+def notify_throttled(cfg: configlib.Config, approver, text: str, key: str | None = None,
+                     min_interval: int = 0, clock=time.time) -> str:
+    """Meldung über den Freigabekanal, je key höchstens alle min_interval Sekunden.
+
+    Für systemd OnFailure= und Monitoring: ein Dienst, der jede Minute scheitert,
+    soll nicht jede Minute melden. Ergebnis: "sent", "throttled" oder "failed".
+    """
+    stamps_path = cfg.state_dir / "notify-stamps.json"
+    stamps: dict = {}
+    if key and min_interval > 0:
+        try:
+            stamps = json.loads(stamps_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            stamps = {}
+        if key in stamps and clock() - float(stamps[key]) < min_interval:
+            return "throttled"
+    if not approver or not approver.notify(text):
+        return "failed"
+    if key and min_interval > 0:
+        stamps[key] = clock()
+        cfg.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        tmp = stamps_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(stamps, indent=2), encoding="utf-8")
+        os.replace(tmp, stamps_path)
+    return "sent"
 
 
 def build_runner(cfg: configlib.Config) -> Runner:
@@ -58,6 +87,10 @@ def main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("status", help="Letzte Läufe anzeigen")
     st.add_argument("-n", type=int, default=10)
     sub.add_parser("check-config", help="gate.yaml und Policy laden und prüfen")
+    nt = sub.add_parser("notify", help="Meldung per Telegram schicken (z. B. aus systemd OnFailure=)")
+    nt.add_argument("text", help="Text, - liest von stdin. **x** wird fett.")
+    nt.add_argument("--key", help="Schlüssel für die Drossel, z. B. der Unit-Name")
+    nt.add_argument("--min-interval", type=int, default=0, help="Sekunden zwischen zwei Meldungen je key")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
@@ -81,6 +114,13 @@ def main(argv: list[str] | None = None) -> int:
         Policy.load(cfg.policy)
         print(f"Konfiguration ok: {cfg.source}")
         return 0
+
+    if args.cmd == "notify":
+        text = sys.stdin.read() if args.text == "-" else args.text
+        result = notify_throttled(cfg, build_approver(cfg, make_redactor(cfg.redaction_extra)), text.strip(),
+                                  key=args.key, min_interval=args.min_interval)
+        print(result)
+        return 1 if result == "failed" else 0
 
     if args.cmd == "status":
         runs = sorted(cfg.runs_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)[-args.n:]
