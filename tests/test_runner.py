@@ -283,7 +283,7 @@ class RunnerTest(unittest.TestCase):
         hooks = {
             "pre_apply": self._hook_script("pre_warn", f"""
                 import json
-                print(json.dumps({{"ok": True, "violations": [{warning!r}]}}))
+                print(json.dumps({{"ok": True, "violations": [{warning!r}, {warning!r}]}}))
             """),
             "post_apply": self._hook_script("post_warn", f"""
                 import json, os
@@ -302,8 +302,8 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(run.status, "applied", run.reasons)
         self.assertEqual(run.level, "approval")
         [req] = self.approver.requests
-        self.assertIn("⚠️ **Achtung:** Neuer Zugang zu **git**", req["summary"])
-        self.assertEqual(json.loads(log.read_text()), [warning])
+        self.assertEqual(req["summary"].count("⚠️ **Achtung:** Neuer Zugang zu **git**"), 1)
+        self.assertEqual(json.loads(log.read_text()), [warning, warning])
 
     def test_declined_warning_not_applied(self):
         hooks, log, _ = self._warning_hooks()

@@ -285,7 +285,8 @@ class Runner:
             if not self.d.approver:
                 return self._reject(run, "Freigabe nötig, aber kein Freigabekanal konfiguriert")
             link = self.cfg.repo.commit_url.format(sha=br.head) if self.cfg.repo.commit_url else None
-            warn = "".join(f"\n\n⚠️ **Achtung:** {w.get('title') or w.get('message', '')}" for w in warnings)
+            texts = dict.fromkeys(w.get("title") or w.get("message", "") for w in warnings)  # ohne Dopplungen
+            warn = "".join(f"\n\n⚠️ **Achtung:** {t}" for t in texts)
             res = self.d.approver.request(
                 plan_hash=run.plan_hash, summary=f"{run.summary}{warn}\n\nBranch {br.name}",
                 agent_reason=git.message(br.head), link=link,
