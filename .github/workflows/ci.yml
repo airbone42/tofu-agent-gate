@@ -12,7 +12,10 @@ jobs:
       - uses: actions/setup-python@v5.6.0
         with:
           python-version: "3.13"
-      - run: pip install "PyYAML>=6"
+      - name: Paket installieren
+        run: python -m pip install .
+      - name: Console-Script vorhanden
+        run: tofu-agent-gate --help
       - run: git config --global user.name ci && git config --global user.email ci@localhost
       - run: python -m unittest discover -s tests -v
   secrets:

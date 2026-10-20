@@ -8,7 +8,7 @@ A small, auditable gate that lets AI agents (or any untrusted automation) propos
 
 Nothing in here is specific to a provider. It was built for a UniFi network managed with `ubiquiti-community/unifi`, but works with any provider.
 
-Status: early (0.1.0.dev0). Python 3.13, standard library plus PyYAML.
+Status: early (0.1.0), in daily use on one UniFi homelab. Python 3.13, standard library plus PyYAML.
 
 ## Security model
 
@@ -48,7 +48,7 @@ See [docs/ARCHITEKTUR.md](docs/ARCHITEKTUR.md) (German) for the full specificati
 ## Install
 
 ```bash
-pip install "git+https://github.com/<owner>/tofu-agent-gate@v0.1.0"
+pip install "git+https://github.com/airbone42/tofu-agent-gate@v0.1.0"
 ```
 
 Configuration defaults to `/etc/tofu-agent-gate/gate.yaml`, override with `GATE_CONFIG` or `--config`.
@@ -101,4 +101,4 @@ Tests need `git` but no network, no OpenTofu binary and no Telegram account: Ope
 
 ## License
 
-TBD.
+MIT, see [LICENSE](LICENSE).

@@ -1,6 +1,6 @@
 # Security Policy
 
-Please report vulnerabilities privately through GitHub Security Advisories of this repository ("Report a vulnerability" on the Security tab of `<owner>/tofu-agent-gate`). Do not open public issues for security problems.
+Please report vulnerabilities privately through GitHub Security Advisories of this repository ("Report a vulnerability" on the Security tab of `airbone42/tofu-agent-gate`). Do not open public issues for security problems.
 
 Scope that matters most: anything that lets an agent branch execute code on the runner, read provider credentials or state, bypass the policy, reuse or forge an approval, or prevent a rollback.
 
