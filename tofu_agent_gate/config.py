@@ -59,6 +59,7 @@ class Config:
     hooks_env_file: Path | None = None
     hook_timeout: int = 300
     redaction_extra: str | None = None
+    keep_work_dirs: int = 30  # Arbeitsordner abgeschlossener Läufe (Snapshots, Pläne)
     source: Path | None = None
 
     @property
@@ -116,6 +117,7 @@ def from_dict(d: dict, source: Path | None = None) -> Config:
             hooks_env_file=_p(hooks.get("env_file")),
             hook_timeout=int(hooks.get("timeout", 300)),
             redaction_extra=(d.get("redaction") or {}).get("extra"),
+            keep_work_dirs=int(d.get("keep_work_dirs", 30)),
             source=source,
         )
     except KeyError as e:

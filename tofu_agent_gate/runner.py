@@ -23,6 +23,11 @@ from .redact import redact_data
 
 log = logging.getLogger(__name__)
 
+# Abgeschlossene Läufe, deren Arbeitsordner weg darf. Nicht dabei: started, applying,
+# rolling_back (Dead-Man braucht den Ordner) und rollback_failed (Diagnose).
+RUN_ID_RE = re.compile(r"^\d{8}T\d{6}-")
+FINISHED = {"applied", "applied_unmerged", "noop", "rejected", "declined", "rolled_back", "error"}
+
 
 def short_reason(text: str | None, limit: int = 300) -> str:
     """Technische Fehlertexte auf eine verständliche Zeile kürzen."""
@@ -192,7 +197,29 @@ class Runner:
             results.append(run)
             if run.status == "rollback_failed":
                 break
+        self._prune_work_dirs()
         return results
+
+    def _prune_work_dirs(self) -> None:
+        """Nur die letzten keep_work_dirs Arbeitsordner behalten (je Lauf mehrere MB Snapshots).
+
+        Gelöscht werden nur Ordner abgeschlossener Läufe. Laufende, zurückrollende und
+        fehlgeschlagene Rollbacks bleiben: Dead-Man und Diagnose brauchen snapshot-before.
+        Die Lauf-Dateien unter runs/ bleiben immer.
+        """
+        keep = self.cfg.keep_work_dirs
+        wdir = self.cfg.state_dir / "work"
+        if keep <= 0 or not wdir.is_dir():
+            return
+        # Nur Ordner mit Lauf-ID (beginnt mit der UTC-Zeit), sortiert = zeitlich.
+        dirs = sorted((p for p in wdir.iterdir() if p.is_dir() and RUN_ID_RE.match(p.name)), key=lambda p: p.name)
+        for p in dirs[: max(0, len(dirs) - keep)]:
+            try:
+                status = Run.load(self.cfg.runs_dir, p.name).status
+            except (OSError, ValueError, TypeError):
+                continue  # unbekannter Ordner: lieber stehen lassen
+            if status in FINISHED:
+                shutil.rmtree(p, ignore_errors=True)
 
     # ------------------------------------------------------------ ein Branch
 

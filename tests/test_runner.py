@@ -452,6 +452,22 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(run.status, "rolled_back", run.reasons)
         self.assertNotIn('unifi_dns_record.this["crash"]', self._ctl())
 
+    def test_old_work_dirs_pruned_but_not_running_or_failed(self):
+        self.cfg.keep_work_dirs = 2
+        wdir = self.cfg.state_dir / "work"
+        statuses = ["applied", "applying", "rollback_failed", "rejected", "applied", "declined"]
+        ids = []
+        for i, status in enumerate(statuses):
+            rid = f"20261020T10000{i}-x-{i:08d}"
+            Run(run_id=rid, branch="desired/x", head="0" * 40, status=status).save(self.cfg.runs_dir)
+            (wdir / rid / "snapshot-before").mkdir(parents=True)
+            ids.append(rid)
+        (wdir / "fremd").mkdir()  # ohne Lauf-Datei: bleibt
+        self.runner.run_once()
+        left = sorted(p.name for p in wdir.iterdir())
+        self.assertEqual(left, sorted([ids[1], ids[2], ids[4], ids[5], "fremd"]))
+        self.assertEqual(len(list(self.cfg.runs_dir.glob("*.json"))), len(statuses))
+
     def test_rollback_for_finished_run_is_noop(self):
         rec = {"name": "h.auto.example", "record_type": "A", "value": "198.51.100.9"}
         self._push_branch("desired/h", self._with("h", rec))
