@@ -36,6 +36,7 @@ state_dir: /var/lib/tofu-agent-gate        # Läufe, Freigaben, Offsets, Backups
 stop_file: /etc/tofu-agent-gate/STOP
 lock_file: /run/tofu-agent-gate.lock
 keep_work_dirs: 30                         # Arbeitsordner (Pläne, Snapshots) abgeschlossener Läufe
+max_branches_per_run: 0                    # >0: höchstens so viele Branches je run-once, dann Lock frei
 
 repo:
   url: ssh://git@git.example/infra/config.git

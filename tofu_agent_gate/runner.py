@@ -171,7 +171,12 @@ class Runner:
     # ------------------------------------------------------------ Einstieg
 
     def run_once(self) -> list[Run]:
-        """Alle neuen desired/*-Branches abarbeiten. Für den systemd-Timer."""
+        """Neue desired/*-Branches abarbeiten. Für den systemd-Timer.
+
+        Mit max_branches_per_run > 0 höchstens so viele, danach gibt der Lauf den Lock frei.
+        Ein Branch mit zwei Exporten hält den Lock eine Viertelstunde, andere Dienste am
+        selben Lock sollen nicht hinter einer ganzen Warteschlange hängen.
+        """
         if self.cfg.stop_file.exists():
             log.warning("STOP-Datei vorhanden, nichts zu tun.")
             return []
@@ -196,6 +201,9 @@ class Runner:
             self._mark_seen(br, run.run_id)
             results.append(run)
             if run.status == "rollback_failed":
+                break
+            if 0 < self.cfg.max_branches_per_run <= len(results):
+                log.info("%s Branch(es) abgearbeitet, Rest im nächsten Lauf.", len(results))
                 break
         self._prune_work_dirs()
         return results

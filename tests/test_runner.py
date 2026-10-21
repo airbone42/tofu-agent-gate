@@ -479,6 +479,20 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(set(self._main_data()["dns_records"]), {"host-1", "host-2", "host-3"})
         self.assertEqual(self._ctl()['unifi_dns_record.this["host-3"]'], rec_b)
 
+    def test_max_branches_per_run_leaves_rest_for_next_run(self):
+        rec_a = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        rec_b = {"name": "host-3.auto.example", "record_type": "A", "value": "198.51.100.3"}
+        self._push_branch("desired/a", self._with("host-2", rec_a))
+        self._push_branch("desired/b", self._with("host-3", rec_b))
+        self.cfg.max_branches_per_run = 1
+        [first] = self.runner.run_once()
+        self.assertEqual((first.branch, first.status), ("desired/a", "applied"), first.reasons)
+        self.assertEqual(set(self._main_data()["dns_records"]), {"host-1", "host-2"})
+        [second] = self.runner.run_once()
+        self.assertEqual((second.branch, second.status), ("desired/b", "applied"), second.reasons)
+        self.assertEqual(self.runner.run_once(), [])
+        self.assertEqual(set(self._main_data()["dns_records"]), {"host-1", "host-2", "host-3"})
+
     def test_real_conflict_names_the_entry(self):
         a = {"name": "host-1.auto.example", "record_type": "A", "value": "198.51.100.7"}
         b = {"name": "host-1.auto.example", "record_type": "A", "value": "198.51.100.8"}

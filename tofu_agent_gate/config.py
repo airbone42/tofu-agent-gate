@@ -60,6 +60,7 @@ class Config:
     hook_timeout: int = 300
     redaction_extra: str | None = None
     keep_work_dirs: int = 30  # Arbeitsordner abgeschlossener Läufe (Snapshots, Pläne)
+    max_branches_per_run: int = 0  # 0 = alle neuen Branches in einem run-once
     source: Path | None = None
 
     @property
@@ -118,6 +119,7 @@ def from_dict(d: dict, source: Path | None = None) -> Config:
             hook_timeout=int(hooks.get("timeout", 300)),
             redaction_extra=(d.get("redaction") or {}).get("extra"),
             keep_work_dirs=int(d.get("keep_work_dirs", 30)),
+            max_branches_per_run=int(d.get("max_branches_per_run", 0)),
             source=source,
         )
     except KeyError as e:

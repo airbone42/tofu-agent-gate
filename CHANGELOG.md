@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `max_branches_per_run` (default 0 = all): `run-once` processes at most this many branches and then releases the lock, so other services sharing the lock do not wait behind a whole queue
+
 ## 0.1.0 - 2026-10-20
 
 First public release.
