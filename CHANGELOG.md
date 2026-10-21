@@ -10,6 +10,7 @@ First public release.
 - Runner: branch polling, path and variable allowlists, plan, hooks, apply, health checks, merge
 - Dead-man switch via `systemd-run`, automatic rollback to the last good commit, STOP file on failed rollback
 - Optional `post_rollback` hook: fresh snapshot after the rollback compared with the snapshot before the apply, because an empty re-plan misses fields the provider does not reset
+- Content-aware three-way merge for `*.tfvars.json`: parallel branches that add different entries to the same file no longer fail with a git conflict; a real conflict names the entry
 - `notify` command with per-key throttling, meant for systemd `OnFailure=` of related services
 - Only the last `keep_work_dirs` (default 30) work directories of finished runs are kept
 - Dead-man timer is re-armed before an in-process rollback

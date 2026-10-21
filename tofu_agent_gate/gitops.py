@@ -102,9 +102,42 @@ class Git:
         """Im Worktree (auf main) den Branch mergen. Gibt den Merge-Commit zurück."""
         r = self._git("merge", "--no-ff", "--no-edit", "-m", message, branch_head, cwd=wt, check=False)
         if not r.ok:
-            self._git("merge", "--abort", cwd=wt, check=False)
-            raise GitError(f"Merge-Konflikt: {r.tail(5)}")
+            problem = self._resolve_tfvars(wt)
+            if problem:
+                self._git("merge", "--abort", cwd=wt, check=False)
+                raise GitError(f"Merge-Konflikt mit main: {problem}. Branch auf den aktuellen main bringen "
+                               "(git fetch, git rebase origin/main) und neu pushen")
+            self._git("commit", "--no-edit", "-m", message, cwd=wt)
         return self._git("rev-parse", "HEAD", cwd=wt).out.strip()
+
+    def _resolve_tfvars(self, wt: Path) -> str | None:
+        """Konflikte in *.tfvars.json inhaltlich auflösen. Gibt den Grund zurück, wenn das nicht geht."""
+        from .jsonmerge import MergeConflict, merge_texts
+
+        files = self._git("diff", "--name-only", "--diff-filter=U", cwd=wt).out.split()
+        if not files:
+            return "unbekannter Konflikt"
+        other = [f for f in files if not f.endswith(".tfvars.json")]
+        if other:
+            return "in " + ", ".join(other)
+
+        def stage(n: int, f: str) -> str | None:
+            r = self._git("show", f":{n}:{f}", cwd=wt, check=False)
+            return r.out if r.ok else None
+
+        for f in files:
+            ours, theirs = stage(2, f), stage(3, f)
+            if ours is None or theirs is None:
+                return f"in {f} (auf einer Seite gelöscht)"
+            try:
+                text = merge_texts(stage(1, f), ours, theirs)
+            except MergeConflict as e:
+                return f"in {f} bei {e.path} (beide Seiten haben denselben Eintrag geändert)"
+            except ValueError:
+                return f"in {f} (kein gültiges JSON)"
+            (wt / f).write_text(text, encoding="utf-8", newline="")
+            self._git("add", "--", f, cwd=wt)
+        return None
 
     def push_main(self, commit: str) -> None:
         self._git("push", "--quiet", "origin", f"{commit}:refs/heads/{self.cfg.repo.main}")

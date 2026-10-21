@@ -468,6 +468,27 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(left, sorted([ids[1], ids[2], ids[4], ids[5], "fremd"]))
         self.assertEqual(len(list(self.cfg.runs_dir.glob("*.json"))), len(statuses))
 
+    def test_parallel_branches_same_file_merged_by_content(self):
+        # Live 21.10.2026: zwei Agenten haengen je einen Eintrag an dieselbe Datei an
+        rec_a = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        rec_b = {"name": "host-3.auto.example", "record_type": "A", "value": "198.51.100.3"}
+        self._push_branch("desired/a", self._with("host-2", rec_a))
+        self._push_branch("desired/b", self._with("host-3", rec_b))
+        runs = self.runner.run_once()
+        self.assertEqual([r.status for r in runs], ["applied", "applied"], [r.reasons for r in runs])
+        self.assertEqual(set(self._main_data()["dns_records"]), {"host-1", "host-2", "host-3"})
+        self.assertEqual(self._ctl()['unifi_dns_record.this["host-3"]'], rec_b)
+
+    def test_real_conflict_names_the_entry(self):
+        a = {"name": "host-1.auto.example", "record_type": "A", "value": "198.51.100.7"}
+        b = {"name": "host-1.auto.example", "record_type": "A", "value": "198.51.100.8"}
+        self._push_branch("desired/a", self._with("host-1", a))
+        self._push_branch("desired/b", self._with("host-1", b))
+        runs = {r.branch: r for r in self.runner.run_once()}
+        self.assertEqual(runs["desired/a"].status, "applied")
+        self.assertEqual(runs["desired/b"].status, "rejected")
+        self.assertIn("/dns_records/host-1/value", runs["desired/b"].reasons[-1])
+
     def test_rollback_for_finished_run_is_noop(self):
         rec = {"name": "h.auto.example", "record_type": "A", "value": "198.51.100.9"}
         self._push_branch("desired/h", self._with("h", rec))
