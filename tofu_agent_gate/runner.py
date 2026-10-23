@@ -97,12 +97,15 @@ class Deps:
     approver: Approver | None = None
     redact: Callable[[str], str] = lambda s: s
     clock: Callable[[], float] = time.time
+    sleep: Callable[[float], None] = time.sleep
 
 
 class Runner:
     def __init__(self, cfg: Config, deps: Deps):
         self.cfg = cfg
         self.d = deps
+        # Nach _run_locked: True, wenn wegen max_branches_per_run noch Branches offen sind.
+        self.pending = False
 
     # ------------------------------------------------------------ Hilfen
 
@@ -176,18 +179,34 @@ class Runner:
         Mit max_branches_per_run > 0 höchstens so viele, danach gibt der Lauf den Lock frei.
         Ein Branch mit zwei Exporten hält den Lock eine Viertelstunde, andere Dienste am
         selben Lock sollen nicht hinter einer ganzen Warteschlange hängen.
+
+        Mit drain_minutes > 0 endet der Lauf dann nicht, sondern wartet drain_pause_seconds
+        ohne Lock (Zeit für die anderen Dienste) und nimmt den nächsten Branch, solange der
+        Lauf jünger als drain_minutes ist. Sonst bliebe nach jedem Branch die Pause des Timers.
         """
-        if self.cfg.stop_file.exists():
-            log.warning("STOP-Datei vorhanden, nichts zu tun.")
-            return []
-        try:
-            with proc.file_lock(self.cfg.lock_file):
-                return self._run_locked()
-        except proc.LockBusy:
-            log.info("Lock belegt, später erneut.")
-            return []
+        started = self.d.clock()
+        results: list[Run] = []
+        while True:
+            if self.cfg.stop_file.exists():
+                if not results:
+                    log.warning("STOP-Datei vorhanden, nichts zu tun.")
+                return results
+            try:
+                with proc.file_lock(self.cfg.lock_file):
+                    results += self._run_locked()
+            except proc.LockBusy:
+                log.info("Lock belegt, später erneut.")
+                return results
+            if not self.pending:
+                return results
+            if self.d.clock() - started >= self.cfg.drain_minutes * 60:
+                log.info("%s Branch(es) abgearbeitet, Rest im nächsten Lauf.", len(results))
+                return results
+            log.info("Noch Branches offen, Lock %s s frei, dann weiter.", self.cfg.drain_pause_seconds)
+            self.d.sleep(self.cfg.drain_pause_seconds)
 
     def _run_locked(self) -> list[Run]:
+        self.pending = False
         self.d.git.ensure_clone()
         self.d.git.fetch()
         seen = self._seen()
@@ -203,10 +222,18 @@ class Runner:
             if run.status == "rollback_failed":
                 break
             if 0 < self.cfg.max_branches_per_run <= len(results):
-                log.info("%s Branch(es) abgearbeitet, Rest im nächsten Lauf.", len(results))
+                self.pending = self._has_unseen()
                 break
         self._prune_work_dirs()
         return results
+
+    def _has_unseen(self) -> bool:
+        """Neu holen: Auch Branches, die während einer Freigabe gepusht wurden, zählen."""
+        if self.cfg.stop_file.exists():
+            return False
+        self.d.git.fetch()
+        seen = self._seen()
+        return any(f"{br.name}@{br.head}" not in seen for br in self.d.git.desired_branches())
 
     def _prune_work_dirs(self) -> None:
         """Nur die letzten keep_work_dirs Arbeitsordner behalten (je Lauf mehrere MB Snapshots).

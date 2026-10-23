@@ -61,6 +61,10 @@ class Config:
     redaction_extra: str | None = None
     keep_work_dirs: int = 30  # Arbeitsordner abgeschlossener Läufe (Snapshots, Pläne)
     max_branches_per_run: int = 0  # 0 = alle neuen Branches in einem run-once
+    # >0: Bleibt nach max_branches_per_run etwas offen, Lock drain_pause_seconds freigeben und
+    # weitermachen, solange der Lauf jünger als drain_minutes ist. 0 = bis zum nächsten run-once.
+    drain_minutes: int = 0
+    drain_pause_seconds: int = 15
     source: Path | None = None
 
     @property
@@ -120,6 +124,8 @@ def from_dict(d: dict, source: Path | None = None) -> Config:
             redaction_extra=(d.get("redaction") or {}).get("extra"),
             keep_work_dirs=int(d.get("keep_work_dirs", 30)),
             max_branches_per_run=int(d.get("max_branches_per_run", 0)),
+            drain_minutes=int(d.get("drain_minutes", 0)),
+            drain_pause_seconds=int(d.get("drain_pause_seconds", 15)),
             source=source,
         )
     except KeyError as e:

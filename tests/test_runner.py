@@ -10,6 +10,11 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:  # Windows: kein flock, proc.file_lock sperrt dort nicht
+    fcntl = None
+
 from tofu_agent_gate import config as configlib
 from tofu_agent_gate.gitops import Git
 from tofu_agent_gate.hooks import Hooks
@@ -494,6 +499,105 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual((second.branch, second.status), ("desired/b", "applied"), second.reasons)
         self.assertEqual(self.runner.run_once(), [])
         self.assertEqual(set(self._main_data()["dns_records"]), {"host-1", "host-2", "host-3"})
+
+    def test_pending_only_while_branches_left(self):
+        rec_a = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        rec_b = {"name": "host-3.auto.example", "record_type": "A", "value": "198.51.100.3"}
+        self._push_branch("desired/a", self._with("host-2", rec_a))
+        self._push_branch("desired/b", self._with("host-3", rec_b))
+        self.cfg.max_branches_per_run = 1
+        self.runner.run_once()
+        self.assertTrue(self.runner.pending)
+        self.runner.run_once()
+        self.assertFalse(self.runner.pending)
+        self.runner.run_once()
+        self.assertFalse(self.runner.pending)
+
+    def test_pending_counts_branch_pushed_during_approval(self):
+        # Ein Agent pusht, während der Lauf auf die Freigabe wartet: gleich weitermachen.
+        rec_a = {"name": "host-2.example", "record_type": "A", "value": "198.51.100.2"}
+        rec_b = {"name": "host-3.auto.example", "record_type": "A", "value": "198.51.100.3"}
+        self._push_branch("desired/a", self._with("host-2", rec_a))
+        request = self.approver.request
+
+        def approve_and_push(**kw):
+            self._push_branch("desired/b", self._with("host-3", rec_b))
+            return request(**kw)
+
+        self.approver.request = approve_and_push
+        self.cfg.max_branches_per_run = 1
+        [run] = self.runner.run_once()
+        self.assertEqual(run.status, "applied", run.reasons)
+        self.assertTrue(self.runner.pending)
+
+    def test_no_pending_after_stop(self):
+        rec_a = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        rec_b = {"name": "host-3.auto.example", "record_type": "A", "value": "198.51.100.3"}
+        self._push_branch("desired/a", self._with("host-2", rec_a))
+        self._push_branch("desired/b", self._with("host-3", rec_b))
+        self.cfg.max_branches_per_run = 1
+        orig = self.runner.process
+
+        def process_then_stop(br):
+            run = orig(br)
+            self.cfg.stop_file.write_text("test")
+            return run
+
+        self.runner.process = process_then_stop
+        self.runner.run_once()
+        self.assertFalse(self.runner.pending)
+
+    def _two_auto_branches(self):
+        rec_a = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        rec_b = {"name": "host-3.auto.example", "record_type": "A", "value": "198.51.100.3"}
+        self._push_branch("desired/a", self._with("host-2", rec_a))
+        self._push_branch("desired/b", self._with("host-3", rec_b))
+        self.cfg.max_branches_per_run = 1
+        self.cfg.drain_minutes = 20
+        self.pauses = []
+        self.runner.d.sleep = self.pauses.append
+
+    def test_drain_works_off_queue_with_lock_pause(self):
+        self._two_auto_branches()
+        runs = self.runner.run_once()
+        self.assertEqual([(r.branch, r.status) for r in runs],
+                         [("desired/a", "applied"), ("desired/b", "applied")], [r.reasons for r in runs])
+        self.assertEqual(self.pauses, [15])  # nur zwischen zwei Branches, nicht am Ende
+        self.assertFalse(self.runner.pending)
+
+    def test_drain_stops_after_budget(self):
+        self._two_auto_branches()
+        ticks = iter(range(0, 10**6, 600))  # jede Uhrabfrage 10 min später
+        self.runner.d.clock = lambda: float(next(ticks))
+        [run] = self.runner.run_once()
+        self.assertEqual(run.branch, "desired/a")
+        self.assertTrue(self.runner.pending)
+        self.assertEqual(self.pauses, [])
+
+    @unittest.skipUnless(fcntl, "flock nur unter Unix")
+    def test_drain_yields_when_other_service_takes_lock(self):
+        self._two_auto_branches()
+        held = []
+
+        def other_service_grabs_lock(_seconds):
+            fd = open(self.cfg.lock_file, "a")
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held.append(fd)
+
+        self.runner.d.sleep = other_service_grabs_lock
+        try:
+            [run] = self.runner.run_once()
+        finally:
+            for fd in held:
+                fd.close()
+        self.assertEqual(run.branch, "desired/a")
+        self.assertEqual(len(held), 1)
+
+    def test_drain_stops_on_stop_file(self):
+        self._two_auto_branches()
+        self.runner.d.sleep = lambda _s: self.cfg.stop_file.write_text("test")
+        [run] = self.runner.run_once()
+        self.assertEqual(run.branch, "desired/a")
 
     def test_real_conflict_names_the_entry(self):
         a = {"name": "host-1.auto.example", "record_type": "A", "value": "198.51.100.7"}
