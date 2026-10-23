@@ -35,7 +35,8 @@ Generisches Gate um OpenTofu für Änderungen, die Agenten vorschlagen. Nichts h
 state_dir: /var/lib/tofu-agent-gate        # Läufe, Freigaben, Offsets, Backups
 stop_file: /etc/tofu-agent-gate/STOP
 lock_file: /run/tofu-agent-gate.lock
-keep_work_dirs: 30                         # Arbeitsordner (Pläne, Snapshots) abgeschlossener Läufe
+keep_work_dirs: 10                         # Arbeitsordner (Pläne, Snapshots) abgeschlossener Läufe
+min_free_percent: 10                       # sonst wartet der Branch (Platz und Inodes im state_dir), 0 = aus
 max_branches_per_run: 0                    # >0: höchstens so viele Branches je run-once, dann Lock frei
 drain_minutes: 0                           # >0: Rest gleich abarbeiten, solange der Lauf jünger ist
 drain_pause_seconds: 15                    #     dazwischen Lock so lange frei (andere Dienste)

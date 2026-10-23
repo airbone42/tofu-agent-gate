@@ -59,7 +59,12 @@ class Config:
     hooks_env_file: Path | None = None
     hook_timeout: int = 300
     redaction_extra: str | None = None
-    keep_work_dirs: int = 30  # Arbeitsordner abgeschlossener Läufe (Snapshots, Pläne)
+    # Arbeitsordner abgeschlossener Läufe (Snapshots, Pläne). Ein UniFi-Snapshot hat ~3700 Dateien,
+    # 30 Läufe mit zwei Snapshots füllten am 23.10.2026 die Inodes einer 4-GB-Platte.
+    keep_work_dirs: int = 10
+    # Vor jedem Branch mindestens so viel Prozent Platz und Inodes frei im state_dir, sonst wartet
+    # der Branch. Ein Apply ohne Platz für Snapshot und Rollback endet in rollback_failed. 0 = aus.
+    min_free_percent: int = 10
     max_branches_per_run: int = 0  # 0 = alle neuen Branches in einem run-once
     # >0: Bleibt nach max_branches_per_run etwas offen, Lock drain_pause_seconds freigeben und
     # weitermachen, solange der Lauf jünger als drain_minutes ist. 0 = bis zum nächsten run-once.
@@ -125,7 +130,8 @@ def from_dict(d: dict, source: Path | None = None) -> Config:
             hooks_env_file=_p(hooks.get("env_file")),
             hook_timeout=int(hooks.get("timeout", 300)),
             redaction_extra=(d.get("redaction") or {}).get("extra"),
-            keep_work_dirs=int(d.get("keep_work_dirs", 30)),
+            keep_work_dirs=int(d.get("keep_work_dirs", 10)),
+            min_free_percent=int(d.get("min_free_percent", 10)),
             max_branches_per_run=int(d.get("max_branches_per_run", 0)),
             drain_minutes=int(d.get("drain_minutes", 0)),
             drain_pause_seconds=int(d.get("drain_pause_seconds", 15)),

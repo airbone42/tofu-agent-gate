@@ -98,6 +98,7 @@ class Deps:
     redact: Callable[[str], str] = lambda s: s
     clock: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
+    statvfs: Callable[[str], Any] = os.statvfs
 
 
 class Runner:
@@ -216,6 +217,8 @@ class Runner:
                 continue
             if self.cfg.stop_file.exists():
                 break
+            if not self._space_ok():
+                break  # Branch bleibt ungesehen, nächster Lauf versucht es wieder
             run = self.process(br)
             self._mark_seen(br, run.run_id)
             results.append(run)
@@ -235,14 +238,49 @@ class Runner:
         seen = self._seen()
         return any(f"{br.name}@{br.head}" not in seen for br in self.d.git.desired_branches())
 
-    def _prune_work_dirs(self) -> None:
+    def _free_percent(self) -> float:
+        """Freier Anteil im state_dir, das Knappere von Platz und Inodes."""
+        st = self.d.statvfs(str(self.cfg.state_dir))
+        space = 100 * st.f_bavail / st.f_blocks if st.f_blocks else 100.0
+        inodes = 100 * st.f_favail / st.f_files if st.f_files else 100.0
+        return min(space, inodes)
+
+    def _space_ok(self) -> bool:
+        """Genug Platz für Worktree, zwei Snapshots und einen Rollback?
+
+        Sonst gar nicht erst anwenden: Am 23.10.2026 lief ein Apply noch durch, Snapshot und
+        Rollback scheiterten danach an vollen Inodes, das Gate stand mit rollback_failed.
+        Bei Knappheit zuerst ältere Arbeitsordner bis auf drei aufräumen.
+        """
+        need = self.cfg.min_free_percent
+        if need <= 0:
+            return True
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        marker = self.cfg.state_dir / "low-space"
+        free = self._free_percent()
+        if free < need:
+            self._prune_work_dirs(keep=min(self.cfg.keep_work_dirs, 3))
+            free = self._free_percent()
+        if free >= need:
+            if marker.exists():
+                marker.unlink()
+                self._notify(f"✅ **Gate**: wieder {free:.0f} % frei, Branches werden weiter abgearbeitet.")
+            return True
+        log.warning("Nur %.1f %% frei in %s (Platz oder Inodes), Branch wartet.", free, self.cfg.state_dir)
+        if not marker.exists():
+            marker.write_text(f"{free:.1f}\n", encoding="utf-8")
+            self._notify(f"⏸️ **Gate wartet**: nur {free:.0f} % frei in {self.cfg.state_dir} (Platz oder "
+                         f"Inodes, nötig {need} %). Nichts angewendet, Branches bleiben in der Warteschlange.")
+        return False
+
+    def _prune_work_dirs(self, keep: int | None = None) -> None:
         """Nur die letzten keep_work_dirs Arbeitsordner behalten (je Lauf mehrere MB Snapshots).
 
         Gelöscht werden nur Ordner abgeschlossener Läufe. Laufende, zurückrollende und
         fehlgeschlagene Rollbacks bleiben: Dead-Man und Diagnose brauchen snapshot-before.
         Die Lauf-Dateien unter runs/ bleiben immer.
         """
-        keep = self.cfg.keep_work_dirs
+        keep = self.cfg.keep_work_dirs if keep is None else keep
         wdir = self.cfg.state_dir / "work"
         if keep <= 0 or not wdir.is_dir():
             return

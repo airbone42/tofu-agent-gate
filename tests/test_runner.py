@@ -9,6 +9,7 @@ import textwrap
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 try:
     import fcntl
@@ -508,6 +509,45 @@ class RunnerTest(unittest.TestCase):
         left = sorted(p.name for p in wdir.iterdir())
         self.assertEqual(left, sorted([ids[1], ids[2], ids[4], ids[5], "fremd"]))
         self.assertEqual(len(list(self.cfg.runs_dir.glob("*.json"))), len(statuses))
+
+    def _fake_statvfs(self, free):
+        """free: Liste mit einem Wert, damit der Test ihn zwischen den Läufen ändern kann."""
+        self.runner.d.statvfs = lambda path: SimpleNamespace(f_blocks=1000, f_bavail=1000, f_files=1000,
+                                                             f_favail=int(free[0] * 10))
+
+    def test_low_space_branch_waits_without_apply(self):
+        # Live 23.10.2026: Inodes voll, Apply lief, Snapshot und Rollback scheiterten
+        rec = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        self._push_branch("desired/add-host-2", self._with("host-2", rec))
+        free = [4]
+        self._fake_statvfs(free)
+        self.assertEqual(self.runner.run_once(), [])
+        self.assertEqual(self.runner.run_once(), [])
+        self.assertNotIn('unifi_dns_record.this["host-2"]', self._ctl())
+        self.assertIn("desired/add-host-2", self._branches())
+        self.assertEqual(len(self.approver.notes), 1, self.approver.notes)  # nur einmal melden
+        self.assertIn("Gate wartet", self.approver.notes[0])
+        free[0] = 50
+        [run] = self.runner.run_once()
+        self.assertEqual(run.status, "applied", run.reasons)
+        self.assertIn("wieder 50 % frei", self.approver.notes[1])
+
+    def test_low_space_prunes_old_work_dirs_first(self):
+        self.cfg.keep_work_dirs = 10
+        wdir = self.cfg.state_dir / "work"
+        for i in range(6):
+            rid = f"20261020T10000{i}-x-{i:08d}"
+            Run(run_id=rid, branch="desired/x", head="0" * 40, status="applied").save(self.cfg.runs_dir)
+            (wdir / rid / "snapshot-before").mkdir(parents=True)
+        # frei wird es erst, wenn höchstens drei Arbeitsordner übrig sind
+        self.runner.d.statvfs = lambda path: SimpleNamespace(
+            f_blocks=1000, f_bavail=1000, f_files=1000,
+            f_favail=500 if len(list(wdir.iterdir())) <= 3 else 10)
+        rec = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        self._push_branch("desired/add-host-2", self._with("host-2", rec))
+        [run] = self.runner.run_once()
+        self.assertEqual(run.status, "applied", run.reasons)
+        self.assertEqual(self.approver.notes, [])
 
     def test_parallel_branches_same_file_merged_by_content(self):
         # Live 21.10.2026: zwei Agenten haengen je einen Eintrag an dieselbe Datei an
