@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 # Abgeschlossene Läufe, deren Arbeitsordner weg darf. Nicht dabei: started, applying,
 # rolling_back (Dead-Man braucht den Ordner) und rollback_failed (Diagnose).
 RUN_ID_RE = re.compile(r"^\d{8}T\d{6}-")
-FINISHED = {"applied", "applied_unmerged", "noop", "rejected", "declined", "rolled_back", "error"}
+FINISHED = {"applied", "applied_unmerged", "noop", "rejected", "declined", "rolled_back", "error", "discarded"}
 
 
 def short_reason(text: str | None, limit: int = 300) -> str:
@@ -497,11 +497,43 @@ class Runner:
         if problem:
             self.cfg.stop_file.parent.mkdir(parents=True, exist_ok=True)
             self.cfg.stop_file.write_text(f"Rollback {run.run_id} fehlgeschlagen: {problem}\n", encoding="utf-8")
-            self._notify(f"🛑 **Rollback fehlgeschlagen, Gate gestoppt**: {run.branch}\n"
-                         f"Grund: {short_reason(cause)}\nRollback: {short_reason(problem)}")
+            discarded = self._discard_pending(run) if self.cfg.discard_pending_on_stop else []
+            text = (f"🛑 **Rollback fehlgeschlagen, Gate gestoppt**: {run.branch}\n"
+                    f"Grund: {short_reason(cause)}\nRollback: {short_reason(problem)}")
+            if discarded:
+                text += "\nVerworfen (nach dem STOP neuer Commit nötig): " + ", ".join(discarded)
+            self._notify(text)
             return self._finish(run, "rollback_failed", problem)
         self._notify(f"↩️ **Zurückgerollt**: {run.branch}\nGrund: {short_reason(cause)}")
         return self._finish(run, "rolled_back")
+
+    def _discard_pending(self, cause: Run) -> list[str]:
+        """Nach rollback_failed: alle wartenden Branches als verworfen abschließen.
+
+        Sie wurden gegen einen Stand geschrieben, der nach dem gescheiterten Rollback nicht mehr
+        gilt, manche bauen sogar auf der gescheiterten Änderung auf (live 23.10.2026). Liefen sie
+        nach dem Aufheben von STOP einfach weiter, käme die ganze Warteschlange ungeprüft durch.
+        Neuer Versuch = neuer Commit auf demselben Branch.
+        """
+        names: list[str] = []
+        try:
+            try:
+                self.d.git.fetch()
+            except GitError as e:
+                log.warning("Fetch vor dem Verwerfen fehlgeschlagen, nehme den letzten Stand: %s", e)
+            seen = self._seen()
+            for br in self.d.git.desired_branches():
+                if f"{br.name}@{br.head}" in seen or (br.name, br.head) == (cause.branch, cause.head):
+                    continue
+                run = Run(run_id=self._run_id(br), branch=br.name, head=br.head, started=self.d.clock())
+                self._finish(run, "discarded",
+                             f"Verworfen: Gate gestoppt, Rollback von {cause.branch} ({cause.run_id}) "
+                             "fehlgeschlagen. Nach dem Aufheben des STOP neuen Commit pushen.")
+                self._mark_seen(br, run.run_id)
+                names.append(br.name)
+        except Exception:  # noqa: BLE001, STOP steht schon, das Verwerfen ist nur Zugabe
+            log.exception("Wartende Branches nicht verworfen")
+        return names
 
     def _do_rollback(self, run: Run, rdir: Path, wt: Path) -> str | None:
         if not run.last_good:

@@ -435,6 +435,40 @@ class RunnerTest(unittest.TestCase):
         self.assertIn(run.run_id, self.deadman.cancelled)
         self.assertIn("desired/sticky", self._branches())
 
+    def test_rollback_failed_discards_waiting_branches(self):
+        # Live 23.10.2026: Agenten pushten weiter, nach dem STOP wäre die Warteschlange durchgelaufen.
+        self._sticky_field_branch()
+        rec = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        self._push_branch("desired/zz-later", self._with("host-2", rec))
+        hooks, _ = self._rollback_hooks(post_apply_fails=True)
+        [run] = self._runner(hooks=hooks).run_once()
+        self.assertEqual(run.status, "rollback_failed", run.reasons)
+        runs = [Run.load(self.cfg.runs_dir, p.stem) for p in self.cfg.runs_dir.glob("*.json")]
+        [later] = [r for r in runs if r.branch == "desired/zz-later"]
+        self.assertEqual(later.status, "discarded")
+        self.assertIn("neuen Commit", later.reasons[-1])
+        self.assertTrue(any("Verworfen" in n and "desired/zz-later" in n for n in self.approver.notes))
+        self.assertNotIn('unifi_dns_record.this["host-2"]', self._ctl())
+        # Nach dem Aufheben des STOP läuft der alte Commit nicht, ein neuer schon.
+        self.cfg.stop_file.unlink()
+        runner = self._runner(hooks={})
+        self.assertEqual(runner.run_once(), [])
+        self._push_branch("desired/zz-later", self._with("host-2", dict(rec, value="198.51.100.3")))
+        [again] = runner.run_once()
+        self.assertEqual((again.branch, again.status), ("desired/zz-later", "applied"), again.reasons)
+
+    def test_rollback_failed_keeps_waiting_branches_when_disabled(self):
+        self.cfg.discard_pending_on_stop = False
+        self._sticky_field_branch()
+        rec = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        self._push_branch("desired/zz-later", self._with("host-2", rec))
+        hooks, _ = self._rollback_hooks(post_apply_fails=True)
+        [run] = self._runner(hooks=hooks).run_once()
+        self.assertEqual(run.status, "rollback_failed", run.reasons)
+        self.cfg.stop_file.unlink()
+        [later] = self._runner(hooks={}).run_once()
+        self.assertEqual((later.branch, later.status), ("desired/zz-later", "applied"), later.reasons)
+
     def test_rollback_check_without_snapshot_before_fails(self):
         hooks, _ = self._rollback_hooks()
         runner = self._runner(hooks=hooks)

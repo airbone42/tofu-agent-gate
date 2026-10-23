@@ -65,6 +65,9 @@ class Config:
     # weitermachen, solange der Lauf jünger als drain_minutes ist. 0 = bis zum nächsten run-once.
     drain_minutes: int = 0
     drain_pause_seconds: int = 15
+    # Nach einem fehlgeschlagenen Rollback alle wartenden Branches verwerfen. Sie bauen auf einem
+    # Stand auf, der so nicht mehr gilt. Neuer Versuch nach dem STOP = neuer Commit.
+    discard_pending_on_stop: bool = True
     source: Path | None = None
 
     @property
@@ -126,6 +129,7 @@ def from_dict(d: dict, source: Path | None = None) -> Config:
             max_branches_per_run=int(d.get("max_branches_per_run", 0)),
             drain_minutes=int(d.get("drain_minutes", 0)),
             drain_pause_seconds=int(d.get("drain_pause_seconds", 15)),
+            discard_pending_on_stop=bool(d.get("discard_pending_on_stop", True)),
             source=source,
         )
     except KeyError as e:

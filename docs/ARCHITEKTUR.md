@@ -39,6 +39,7 @@ keep_work_dirs: 30                         # Arbeitsordner (Pläne, Snapshots) a
 max_branches_per_run: 0                    # >0: höchstens so viele Branches je run-once, dann Lock frei
 drain_minutes: 0                           # >0: Rest gleich abarbeiten, solange der Lauf jünger ist
 drain_pause_seconds: 15                    #     dazwischen Lock so lange frei (andere Dienste)
+discard_pending_on_stop: true              # nach fehlgeschlagenem Rollback wartende Branches verwerfen
 
 repo:
   url: ssh://git@git.example/infra/config.git
@@ -205,3 +206,4 @@ Ergebnisdateien liegen unter `state_dir/runs/<run_id>.json` und werden nicht ins
    - Frischen Snapshot nach `state_dir/work/<run_id>/snapshot-after-rollback` ziehen, dann `post_rollback` mit `snapshot-before` und einem leeren Plan ausführen.
    - Fehlt der Snapshot vorher oder meldet der Hook einen Verstoß, gilt der Rollback als fehlgeschlagen.
 6. **Melden:** Erfolg oder Fehlschlag per Telegram. Bei Fehlschlag setzt der Rollback die STOP-Datei, damit nichts weiterläuft, bis ein Mensch draufschaut.
+7. **Warteschlange verwerfen** (bei Fehlschlag, `discard_pending_on_stop`, Standard an): Alle noch nicht gelaufenen Branches bekommen einen Lauf mit Status `discarded` und gelten als gesehen. Sie wurden gegen einen Stand geschrieben, der nicht mehr gilt, und liefen sonst nach dem Aufheben von STOP ungeprüft durch. Die Telegram-Meldung nennt sie. Neuer Versuch = neuer Commit.

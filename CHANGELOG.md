@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `discard_pending_on_stop` (default on): after a failed rollback all branches still waiting get status `discarded` and are named in the STOP notification. They were written against a state that no longer holds; after the STOP only a new commit runs them
 - `max_branches_per_run` (default 0 = all): `run-once` processes at most this many branches and then releases the lock, so other services sharing the lock do not wait behind a whole queue
 - No "applied" notification, neither after a human approval nor for auto changes: success is the expected outcome, failures, rejections, rollbacks and unmerged applies are still reported
 

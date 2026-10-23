@@ -26,7 +26,7 @@ Status: early (0.1.0), in daily use on one UniFi homelab. Python 3.13, standard 
 | Apply breaks connectivity or a provider silently writes something else | Post-apply health checks: empty re-plan, external snapshot diff and invariant hooks, automatic rollback to the last good commit |
 | Runner hangs during apply | Dead-man timer (`systemd-run`) kills the run and rolls back |
 | Rollback leaves something behind (provider treats null as "keep") | Optional `post_rollback` hook compares a fresh snapshot with the one taken before the apply |
-| Rollback itself fails | Runner writes a STOP file and stops processing until a human looks |
+| Rollback itself fails | Runner writes a STOP file and stops processing until a human looks. Branches still waiting are discarded (`discard_pending_on_stop`), a new commit retries them after the STOP |
 
 Policies and hook configuration live on the runner host, never in the repository. Run the gate from a release tag, not from a branch.
 
