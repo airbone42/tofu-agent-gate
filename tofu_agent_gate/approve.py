@@ -30,6 +30,7 @@ MAX_REASON = 800
 HASH_SHOWN = 12
 REASON_LABEL = "Begründung des Agenten (ungeprüft):"
 MAX_REASON_LINE = 300
+NOTIFY_RETRY_DELAYS = (5.0, 15.0, 40.0, 60.0)  # Sekunden zwischen den Versuchen von notify
 INVALID_HINT = "Nicht gültig"
 
 # Gründe in ApprovalResult.reason
@@ -221,13 +222,29 @@ class Approver:
             log.warning("answerCallbackQuery fehlgeschlagen: %s", self.redact(str(exc)))
 
     def notify(self, text: str) -> bool:
-        """Meldung an den Owner-Chat. Klartext, **x** wird fett. False bei Fehler, kein Absturz."""
-        try:
-            self._send(light_markup(cut(self.redact(text), MAX_TEXT - 200)))
-            return True
-        except (TelegramError, OSError) as exc:
-            log.warning("notify fehlgeschlagen: %s", self.redact(str(exc)))
-            return False
+        """Meldung an den Owner-Chat. Klartext, **x** wird fett. False bei Fehler, kein Absturz.
+
+        Übertragungsfehler, 429 und 5xx werden nach NOTIFY_RETRY_DELAYS wiederholt (zusammen
+        knapp 2 min): Ein kurzer DNS-Aussetzer in CT 109 hat am 23.10.2026 die Meldung zu einem
+        fehlgeschlagenen Rollback verschluckt."""
+        body = light_markup(cut(self.redact(text), MAX_TEXT - 200))
+        for attempt in range(len(NOTIFY_RETRY_DELAYS) + 1):
+            try:
+                self._send(body)
+                return True
+            except (TelegramError, OSError) as exc:
+                log.warning("notify fehlgeschlagen: %s", self.redact(str(exc)))
+                code = getattr(exc, "error_code", None)
+                if isinstance(code, int) and 400 <= code < 500 and code != 429:
+                    return False
+                if attempt == len(NOTIFY_RETRY_DELAYS):
+                    return False
+                wait = NOTIFY_RETRY_DELAYS[attempt]
+                retry_after = getattr(exc, "retry_after", None)
+                if isinstance(retry_after, (int, float)) and retry_after > 0:
+                    wait = min(float(retry_after), self.max_backoff)
+                self.sleep(wait)
+        return False
 
     # ---------- Text ----------
 

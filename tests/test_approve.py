@@ -458,6 +458,28 @@ class NetworkTest(Base):
     def test_notify_error_returns_false(self) -> None:
         self.tg.break_method("sendMessage", lambda: OSError("down"))
         self.assertFalse(self.approver.notify("x"))
+        self.assertEqual(len(self.tg.calls_of("sendMessage")), 5)
+        self.assertEqual(self.clock.sleeps, [5.0, 15.0, 40.0, 60.0])
+
+    def test_notify_retries_after_dns_failure(self) -> None:
+        # 23.10.2026: kurzer DNS-Aussetzer in CT 109 verschluckte die Rollback-Meldung
+        self.tg.fail("sendMessage", OSError("[Errno -3] Temporary failure in name resolution"),
+                     {"ok": False, "error_code": 502, "description": "Bad Gateway"})
+        self.assertTrue(self.approver.notify("Rollback fehlgeschlagen"))
+        self.assertEqual(len(self.tg.sent), 1)
+        self.assertEqual(self.clock.sleeps, [5.0, 15.0])
+
+    def test_notify_honors_retry_after(self) -> None:
+        self.tg.fail("sendMessage", {"ok": False, "error_code": 429, "description": "Too Many Requests",
+                                     "parameters": {"retry_after": 7}})
+        self.assertTrue(self.approver.notify("x"))
+        self.assertEqual(self.clock.sleeps, [7.0])
+
+    def test_notify_client_error_not_retried(self) -> None:
+        self.tg.fail("sendMessage", {"ok": False, "error_code": 403, "description": "Forbidden"})
+        self.assertFalse(self.approver.notify("x"))
+        self.assertEqual(len(self.tg.calls_of("sendMessage")), 1)
+        self.assertEqual(self.clock.sleeps, [])
 
     def test_other_updates_ignored_offset_counts(self) -> None:
         def act(m: MockTelegram) -> None:
