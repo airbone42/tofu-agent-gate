@@ -546,6 +546,51 @@ class RunnerTest(unittest.TestCase):
         self.assertNotIn('unifi_dns_record.this["rest"]', self._ctl())
         self.assertFalse(self.cfg.stop_file.exists())
 
+    def _forward_stop(self):
+        """Apply durch, Prüfung danach und Rollback gescheitert, Controller hat den Branch-Stand."""
+        rec = {"name": "host-2.auto.example", "record_type": "A", "value": "198.51.100.2"}
+        self._push_branch("desired/fwd", self._with("host-2", rec))
+        hooks, _ = self._rollback_hooks(post_apply_fails=True)
+        hooks["post_rollback"] = self._hook_script("post_rb_fail", """
+            import json, sys
+            print(json.dumps({"ok": False, "violations": [{"id": "x", "message": "weicht ab"}]}))
+            sys.exit(1)
+        """)
+        [run] = self._runner(hooks=hooks).run_once()
+        self.assertEqual(run.status, "rollback_failed", run.reasons)
+        # Live 23.10.2026: Platte voll, der Rollback kam nie bis zum Controller.
+        ctl = self._ctl()
+        ctl['unifi_dns_record.this["host-2"]'] = rec
+        self.controller.write_text(json.dumps(ctl))
+        hooks["recover"] = self._hook_script("recover_fwd", """
+            import json, os, sys
+            plan = json.load(open(os.environ["GATE_PLAN_JSON"]))
+            assert plan["resource_changes"], "beim Übernehmen zählt der Plan des Laufs"
+            print(json.dumps({"ok": True, "violations": []}))
+        """)
+        return run, self._runner(hooks=hooks)
+
+    def test_recover_rolls_forward_when_controller_matches_branch(self):
+        run, runner = self._forward_stop()
+        self.approver.requests.clear()
+        self.assertEqual(runner.recover(), "resumed")
+        self.assertEqual(self.approver.requests, [])
+        self.assertFalse(self.cfg.stop_file.exists())
+        self.assertIn("host-2", self._main_data()["dns_records"])
+        self.assertNotIn("desired/fwd", self._branches())
+        self.assertEqual(Run.load(self.cfg.runs_dir, run.run_id).status, "applied")
+        self.assertTrue(any("nach main übernommen" in n for n in self.approver.notes))
+
+    def test_recover_forward_needs_matching_controller(self):
+        run, runner = self._forward_stop()
+        ctl = self._ctl()
+        ctl['unifi_dns_record.this["host-2"]']["value"] = "198.51.100.99"  # weder main noch Branch
+        self.controller.write_text(json.dumps(ctl))
+        self.approver.answer = False
+        self.assertEqual(runner.recover(), "declined")
+        self.assertIn("Accept: main erneut anwenden", self.approver.requests[-1]["summary"])
+        self.assertNotIn("host-2", self._main_data()["dns_records"])
+
     def test_recover_new_stop_is_checked_again(self):
         run, runner = self._stopped(recover_ok=False)
         self.approver.answer = False

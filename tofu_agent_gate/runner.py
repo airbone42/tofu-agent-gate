@@ -707,13 +707,19 @@ class Runner:
     def _recover_locked(self, run: Run, stop_text: str, key: str) -> str:
         rdir = self._run_dir(run.run_id)
         wt = rdir / "recover-tree"
+        fwt = rdir / "recover-forward-tree"
         try:
-            tofu, changes, problems, info = self._recover_check(run, rdir, wt)
+            tofu, changes, problems, info, forward = self._recover_check(run, rdir, wt, fwt)
             if self._stop_key() != key:
                 return "changed"
             if not changes and not problems:
-                return self._resume(run, stop_text, key, "UDM gleich main, Prüfung bestanden", info)
-            return self._recover_ask(run, stop_text, key, tofu, changes, problems, info)
+                if not forward:
+                    return self._resume(run, stop_text, key, "UDM gleich main, Prüfung bestanden", info)
+                err = self._roll_forward(run, fwt)
+                if not err:
+                    return self._resume(run, stop_text, key, "UDM gleich Branch, nach main übernommen", info)
+                problems = [err]
+            return self._recover_ask(run, stop_text, key, tofu, changes, problems, info, forward, fwt)
         except Exception as e:  # noqa: BLE001, STOP bleibt in jedem Fall stehen
             log.exception("Wiederanlauf nach %s abgebrochen", run.run_id)
             self._save_recover_state(key, "error")
@@ -722,11 +728,18 @@ class Runner:
             return "error"
         finally:
             self.d.git.remove_worktree(wt)
+            self.d.git.remove_worktree(fwt)
 
-    def _recover_check(self, run: Run, rdir: Path, wt: Path) -> tuple[Any, list, list[str], list[str]]:
+    def _recover_check(self, run: Run, rdir: Path, wt: Path,
+                       fwt: Path) -> tuple[Any, list, list[str], list[str], bool]:
         """Plan von main gegen den Controller, bei leerem Plan der recover-Hook.
 
-        Ergebnis: tofu (für ein späteres Apply), geplante Änderungen, blockierende Probleme, Hinweise.
+        Ist der Plan von main nicht leer, der des gescheiterten Laufs (merge_commit) aber schon,
+        ging der Apply durch und erst die Prüfung danach schief (live 23.10.2026: Platte voll).
+        Dann gilt der schon freigegebene Branch-Stand als Ziel ("forward"), nicht main.
+
+        Ergebnis: tofu (für ein späteres Apply von main), geplante Änderungen, blockierende
+        Probleme, Hinweise, forward.
         """
         git = self.d.git
         git.fetch()
@@ -734,18 +747,19 @@ class Runner:
         tofu = self._tofu_in(wt)
         r = tofu.init()
         if not r.ok:
-            return tofu, [], [f"tofu init fehlgeschlagen: {short_reason(r.tail(8))}"], []
+            return tofu, [], [f"tofu init fehlgeschlagen: {short_reason(r.tail(8))}"], [], False
         planfile = rdir / "recover.bin"
         r = tofu.plan(planfile)
         if not r.ok:
-            return tofu, [], [f"tofu plan fehlgeschlagen: {short_reason(r.tail(8))}"], []
+            return tofu, [], [f"tofu plan fehlgeschlagen: {short_reason(r.tail(8))}"], [], False
         dec = classify(tofu.show_json(planfile), self.d.policy, rollback=True)
         if dec.level == "reject":
-            return tofu, [], ["Plan von main verletzt forbidden: " + "; ".join(dec.reasons)], []
-        if dec.changes:
-            return tofu, dec.changes, [], []
+            return tofu, [], ["Plan von main verletzt forbidden: " + "; ".join(dec.reasons)], [], False
+        forward = bool(dec.changes) and self._matches_branch(run, rdir, fwt)
+        if dec.changes and not forward:
+            return tofu, dec.changes, [], [], False
         if not self.d.hooks.configured("recover"):
-            return tofu, [], ["Plan leer, aber kein recover-Hook für den Abgleich mit dem Snapshot"], []
+            return tofu, [], ["Plan leer, aber kein recover-Hook für den Abgleich mit dem Snapshot"], [], forward
         snap_before = rdir / "snapshot-before"
         snap_after = None
         if self.d.hooks.configured("snapshot"):
@@ -753,29 +767,63 @@ class Runner:
             shutil.rmtree(snap_after, ignore_errors=True)
             hr = self.d.hooks.snapshot(run.run_id, snap_after)
             if not hr.ok:
-                return tofu, [], ["Snapshot fehlgeschlagen: " + "; ".join(hr.messages())], []
-        plan_path = rdir / "recover-check.json"
-        plan_path.write_text(json.dumps({"format_version": "1.2", "resource_changes": []}), encoding="utf-8")
-        os.chmod(plan_path, 0o600)
-        hr = self.d.hooks.run("recover", run.run_id, plan_json=plan_path, repo_dir=wt,
+                return tofu, [], ["Snapshot fehlgeschlagen: " + "; ".join(hr.messages())], [], forward
+        # Erwartet: keine Änderung gegen den Stand vorher, beim Übernehmen die des Laufs.
+        plan_path = rdir / "plan.json"
+        if not (forward and plan_path.is_file()):
+            plan_path = rdir / "recover-check.json"
+            plan_path.write_text(json.dumps({"format_version": "1.2", "resource_changes": []}), encoding="utf-8")
+            os.chmod(plan_path, 0o600)
+        hr = self.d.hooks.run("recover", run.run_id, plan_json=plan_path, repo_dir=fwt if forward else wt,
                               snapshot_before=snap_before if snap_before.is_dir() else None,
                               snapshot_after=snap_after)
         if not hr.ok:
-            return tofu, [], hr.messages(), []
-        return tofu, [], [], hr.messages()
+            return tofu, [], hr.messages(), [], forward
+        return tofu, [], [], hr.messages(), forward
+
+    def _matches_branch(self, run: Run, rdir: Path, fwt: Path) -> bool:
+        """Plant der Stand des gescheiterten Laufs (main + Branch) leer? Dann ist er live."""
+        if not run.merge_commit:
+            return False
+        try:
+            self.d.git.worktree(fwt, run.merge_commit)
+        except GitError as e:
+            log.info("merge_commit %s nicht mehr da: %s", run.merge_commit[:8], e)
+            return False
+        tofu = self._tofu_in(fwt)
+        if not tofu.init().ok:
+            return False
+        planfile = rdir / "recover-forward.bin"
+        if not tofu.plan(planfile).ok:
+            return False
+        dec = classify(tofu.show_json(planfile), self.d.policy, rollback=True)
+        return dec.level != "reject" and not dec.changes
+
+    def _roll_forward(self, run: Run, fwt: Path) -> str | None:
+        """Branch-Stand nach main übernehmen, wie nach einem gelungenen Lauf."""
+        try:
+            self._push_merge(run, Branch(run.branch, run.head), fwt)
+        except GitError as e:
+            return f"Branch-Stand nicht nach main übernommen: {e}"
+        self._finish(run, "applied", "Nach dem STOP übernommen: Die Infrastruktur entsprach schon dem Branch")
+        return None
 
     def _recover_ask(self, run: Run, stop_text: str, key: str, tofu, changes: list,
-                     problems: list[str], info: list[str]) -> str:
+                     problems: list[str], info: list[str], forward: bool = False,
+                     fwt: Path | None = None) -> str:
         since = time.strftime("%d.%m. %H:%M UTC", time.gmtime(self.cfg.stop_file.stat().st_mtime))
         lines = [f"🛑 Gate steht seit {since}, Rollback von {run.branch} fehlgeschlagen.",
                  "Selbstprüfung nicht bestanden:"]
+        if forward:
+            lines.append("Die Infrastruktur entspricht schon dem Branch (Apply war durch).")
         if changes:
             lines.append("Plan von main nicht leer:\n" + planlib.summarize(changes))
         lines += [f"- {short_reason(p, 200)}" for p in problems[:8]]
         if len(problems) > 8:
             lines.append(f"- … und {len(problems) - 8} weitere")
-        lines.append(("Accept: main erneut anwenden und STOP aufheben." if changes else "Accept: STOP aufheben.")
-                     + " Decline: STOP bleibt, ohne erneute Nachfrage.")
+        accept = ("Accept: Branch-Stand nach main übernehmen und STOP aufheben." if forward
+                  else "Accept: main erneut anwenden und STOP aufheben." if changes else "Accept: STOP aufheben.")
+        lines.append(accept + " Decline: STOP bleibt, ohne erneute Nachfrage.")
         if not self.d.approver:
             self._save_recover_state(key, "kept")
             self._notify("\n".join(lines))
@@ -788,7 +836,13 @@ class Runner:
         if self._stop_key() != key:
             return "changed"
         if getattr(res, "approved", False):
-            if changes:
+            if forward and fwt is not None:
+                err = self._roll_forward(run, fwt)
+                if err:
+                    self._save_recover_state(key, "failed")
+                    self._notify(f"🛑 **Gate steht weiter**: {short_reason(err)}")
+                    return "kept"
+            elif changes:
                 err = self._recover_apply(tofu, run, changes)
                 if err:
                     self._save_recover_state(key, "failed")
