@@ -187,7 +187,7 @@ approver.notify(text)
    - Der Plan auf demselben Stand muss leer sein (`-detailed-exitcode` = 0).
    - Snapshot nachher ziehen, dann die `post_apply`-Hooks ausführen.
 10. **Ergebnis:**
-    - Erfolg: Dead-Man abbrechen, Merge-Commit nach `main` pushen, Branch löschen, Meldung (nicht nach einer Freigabe, da ist Erfolg der Normalfall).
+    - Erfolg: Dead-Man abbrechen, Merge-Commit nach `main` pushen, Branch löschen, keine Meldung (Erfolg ist der Normalfall).
     - Fehler: Rollback sofort, Ergebnisdatei, Meldung, Branch bleibt.
 
 Ergebnisdateien liegen unter `state_dir/runs/<run_id>.json` und werden nicht ins Repo geschrieben, damit Agenten keinen Push auf `main` brauchen.

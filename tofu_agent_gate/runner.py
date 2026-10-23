@@ -424,9 +424,7 @@ class Runner:
             # Änderung ist live und geprüft, nur der Merge fehlt. Kein Rollback.
             self._notify(f"⚠️ **Angewendet, aber nicht gemergt**: {br.name}\n{short_reason(str(e))}")
             return self._finish(run, "applied_unmerged", str(e))
-        if run.level != "approval":
-            # Nach einer Freigabe ist Erfolg der Normalfall, gemeldet wird dann nur ein Fehler.
-            self._notify(f"✅ **Angewendet**: {br.name}\n{run.summary}")
+        # Erfolg ist der Normalfall, auch ohne Freigabe. Gemeldet werden nur Fehler.
         return self._finish(run, "applied")
 
     def _health(self, run: Run, wt: Path, tofu, plan_path: Path, snap_before: Path | None,

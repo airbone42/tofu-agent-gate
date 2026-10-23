@@ -169,7 +169,7 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(self.deadman.scheduled, [run.run_id])
         self.assertIn(run.run_id, self.deadman.cancelled)
         self.assertEqual(self.approver.requests, [])
-        self.assertTrue(any("Angewendet" in n for n in self.approver.notes))
+        self.assertEqual(self.approver.notes, [])  # keine Erfolgsmeldung, auch ohne Freigabe
 
     def test_same_head_not_processed_twice(self):
         rec = {"name": "host-2.forbidden-not.example", "record_type": "A", "value": "198.51.100.2"}
@@ -663,16 +663,20 @@ class RunnerTest(unittest.TestCase):
         git("push", "-q", "origin", "HEAD:refs/heads/desired/b", cwd=self.agent)
         other = self.tmp / "human"
 
-        def human_pushes(text):
-            if "desired/a" not in text or other.exists():
-                return
-            git("clone", "-q", str(self.origin), str(other), cwd=self.tmp)
-            (other / "tofu" / "dns-x.auto.tfvars.json").write_text(json.dumps({"dns_records": {"host-9": rec_x}}))
-            git("add", "-A", cwd=other)
-            git("commit", "-q", "-m", "von Hand", cwd=other)
-            git("push", "-q", "origin", "HEAD:main", cwd=other)
+        finish = self.runner._finish
 
-        self.approver.on_notify = human_pushes
+        def human_pushes(run, status, *args, **kwargs):
+            # Erfolg wird nicht gemeldet, also direkt nach dem Abschluss von A einhaken.
+            result = finish(run, status, *args, **kwargs)
+            if run.branch == "desired/a" and status == "applied" and not other.exists():
+                git("clone", "-q", str(self.origin), str(other), cwd=self.tmp)
+                (other / "tofu" / "dns-x.auto.tfvars.json").write_text(json.dumps({"dns_records": {"host-9": rec_x}}))
+                git("add", "-A", cwd=other)
+                git("commit", "-q", "-m", "von Hand", cwd=other)
+                git("push", "-q", "origin", "HEAD:main", cwd=other)
+            return result
+
+        self.runner._finish = human_pushes
         runs = self.runner.run_once()
         self.assertEqual([r.status for r in runs], ["applied", "applied"], [r.reasons for r in runs])
         self.assertEqual(runs[1].last_good, git("rev-parse", "HEAD", cwd=other))
