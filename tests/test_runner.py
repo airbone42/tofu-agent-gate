@@ -470,6 +470,90 @@ class RunnerTest(unittest.TestCase):
         [later] = self._runner(hooks={}).run_once()
         self.assertEqual((later.branch, later.status), ("desired/zz-later", "applied"), later.reasons)
 
+    # ---------------------------------------------------------------- Wiederanlauf nach STOP
+
+    def _stopped(self, recover_ok=True):
+        """rollback_failed (Feld bleibt nach dem Rollback stehen), dazu ein recover-Hook."""
+        self._sticky_field_branch()
+        hooks, _ = self._rollback_hooks(post_apply_fails=True)
+        [run] = self._runner(hooks=hooks).run_once()
+        self.assertEqual(run.status, "rollback_failed", run.reasons)
+        hooks["recover"] = self._hook_script("recover", f"""
+            import json, os, sys
+            assert os.environ["GATE_PHASE"] == "recover"
+            assert os.path.isdir(os.environ["GATE_SNAPSHOT_BEFORE"])
+            assert os.path.isfile(os.path.join(os.environ["GATE_SNAPSHOT_AFTER"], "controller.json"))
+            ok = {recover_ok!r}
+            print(json.dumps({{"ok": ok, "violations": [
+                {{"id": "unexpected-change", "message": "Policy p verschwunden" if not ok else "Feld comment"}}]}}))
+            sys.exit(0 if ok else 1)
+        """)
+        return run, self._runner(hooks=hooks)
+
+    def test_recover_resumes_when_main_matches(self):
+        run, runner = self._stopped()
+        self.approver.requests.clear()
+        self.assertEqual(runner.recover(), "resumed")
+        self.assertFalse(self.cfg.stop_file.exists())
+        [copy] = self.cfg.state_dir.glob(f"STOP-*-{run.run_id}.txt")
+        self.assertIn(run.run_id, copy.read_text())
+        self.assertEqual(self.approver.requests, [])
+        self.assertTrue(any("Gate läuft wieder" in n and "Feld comment" in n for n in self.approver.notes))
+        self.assertEqual(runner.recover(), "no_stop")
+
+    def test_recover_leaves_manual_stop_alone(self):
+        self.cfg.stop_file.write_text("Tobias: Wartung\n")
+        self.assertEqual(self.runner.recover(), "manual")
+        self.assertTrue(self.cfg.stop_file.exists())
+
+    def test_recover_asks_once_and_keeps_stop_on_decline(self):
+        run, runner = self._stopped(recover_ok=False)
+        self.approver.answer = False
+        self.assertEqual(runner.recover(), "declined")
+        self.assertTrue(self.cfg.stop_file.exists())
+        [req] = self.approver.requests
+        self.assertIn("Policy p verschwunden", req["summary"])
+        self.assertIn("Decline: STOP bleibt", req["summary"])
+        self.assertEqual(runner.recover(), "declined")
+        self.assertEqual(len(self.approver.requests), 1)
+
+    def test_recover_accept_resumes_despite_findings(self):
+        run, runner = self._stopped(recover_ok=False)
+        self.approver.answer = True
+        self.assertEqual(runner.recover(), "resumed")
+        self.assertFalse(self.cfg.stop_file.exists())
+
+    def test_recover_timeout_waits_before_asking_again(self):
+        run, runner = self._stopped(recover_ok=False)
+        self.approver.request = lambda **kw: (self.approver.requests.append(kw), Res(False, "timeout"))[1]
+        self.assertEqual(runner.recover(), "waiting")
+        self.assertEqual(runner.recover(), "waiting")
+        self.assertEqual(len(self.approver.requests), 1)
+        self.cfg.recover_reask_hours = 0
+        self.assertEqual(runner.recover(), "waiting")
+        self.assertEqual(len(self.approver.requests), 2)
+
+    def test_recover_reapplies_main_after_accept(self):
+        run, runner = self._stopped()
+        ctl = self._ctl()
+        ctl['unifi_dns_record.this["rest"]'] = {"name": "rest.auto.example", "record_type": "A", "value": "198.51.100.9"}
+        self.controller.write_text(json.dumps(ctl))
+        self.approver.requests.clear()
+        self.approver.answer = True
+        self.assertEqual(runner.recover(), "resumed")
+        [req] = self.approver.requests
+        self.assertIn("Plan von main nicht leer", req["summary"])
+        self.assertNotIn('unifi_dns_record.this["rest"]', self._ctl())
+        self.assertFalse(self.cfg.stop_file.exists())
+
+    def test_recover_new_stop_is_checked_again(self):
+        run, runner = self._stopped(recover_ok=False)
+        self.approver.answer = False
+        self.assertEqual(runner.recover(), "declined")
+        self.cfg.stop_file.write_text(self.cfg.stop_file.read_text() + "zweiter Fehler\n")
+        self.assertEqual(runner.recover(), "declined")
+        self.assertEqual(len(self.approver.requests), 2)
+
     def test_rollback_check_without_snapshot_before_fails(self):
         hooks, _ = self._rollback_hooks()
         runner = self._runner(hooks=hooks)

@@ -80,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run-once", help="Neue desired/*-Branches abarbeiten")
     rb = sub.add_parser("rollback", help="Lauf zurückrollen (Dead-Man-Timer)")
     rb.add_argument("run_id")
+    sub.add_parser("recover", help="STOP nach fehlgeschlagenem Rollback prüfen und ggf. aufheben (Timer)")
     cl = sub.add_parser("classify", help="Plan-JSON gegen die Policy prüfen, ohne etwas zu tun")
     cl.add_argument("plan_json")
     cl.add_argument("--policy", help="statt der Policy aus gate.yaml")
@@ -134,6 +135,10 @@ def main(argv: list[str] | None = None) -> int:
         results = runner.run_once()
         bad = [r for r in results if r.status in ("error", "rollback_failed")]
         return 1 if bad else 0
+    if args.cmd == "recover":
+        result = runner.recover()
+        print(result)
+        return 1 if result == "error" else 0
     if args.cmd == "rollback":
         r = runner.rollback(args.run_id)
         return 0 if r.status in ("rolled_back", "applied", "rejected", "declined", "noop") else 1

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -26,6 +27,8 @@ log = logging.getLogger(__name__)
 # Abgeschlossene Läufe, deren Arbeitsordner weg darf. Nicht dabei: started, applying,
 # rolling_back (Dead-Man braucht den Ordner) und rollback_failed (Diagnose).
 RUN_ID_RE = re.compile(r"^\d{8}T\d{6}-")
+# Erste Zeile der STOP-Datei, die ein fehlgeschlagener Rollback schreibt (recover erkennt sie daran).
+STOP_RE = re.compile(r"^Rollback (\S+) fehlgeschlagen")
 FINISHED = {"applied", "applied_unmerged", "noop", "rejected", "declined", "rolled_back", "error", "discarded"}
 
 
@@ -624,3 +627,211 @@ class Runner:
         if not hr.ok:
             return "Stand nach dem Rollback weicht ab: " + "; ".join(hr.messages())
         return None
+
+    # ------------------------------------------------------------ Wiederanlauf nach STOP
+
+    def recover(self) -> str:
+        """STOP nach einem fehlgeschlagenen Rollback selbst aufheben, wenn alles wieder stimmt.
+
+        Für einen Timer, solange STOP steht. Angefasst wird nur die STOP-Datei, die das Gate
+        nach rollback_failed selbst schreibt ("Rollback <run_id> fehlgeschlagen"), nie eine
+        von Hand oder vom Deploy gesetzte. Geprüft wird je STOP einmal, danach frühestens nach
+        recover_reask_hours (Plan und Snapshot kosten viele API-Abfragen).
+
+        Grün (Plan von main leer, recover-Hook auf frischem Snapshot ohne Verstoß): STOP weg,
+        Kopie unter state_dir, Meldung. Sonst eine Freigabe: Accept wendet main bei Bedarf
+        erneut an und hebt den STOP auf, Decline lässt ihn stehen, ohne erneut zu fragen.
+
+        Ergebnis: no_stop, manual, declined, waiting, busy, changed, resumed, kept, error.
+        """
+        try:
+            stop_text = self.cfg.stop_file.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            return "no_stop"
+        m = STOP_RE.match(stop_text)
+        run = None
+        if m:
+            try:
+                run = Run.load(self.cfg.runs_dir, m.group(1))
+            except (OSError, ValueError, TypeError):
+                run = None
+        if run is None or run.status != "rollback_failed":
+            log.info("STOP stammt nicht von einem fehlgeschlagenen Rollback, bleibt unberührt.")
+            return "manual"
+        key = hashlib.sha256(stop_text.encode()).hexdigest()
+        state = self._recover_state()
+        if state.get("key") == key:
+            if state.get("decision") == "declined":
+                return "declined"
+            if self.d.clock() - float(state.get("checked_at") or 0) < self.cfg.recover_reask_hours * 3600:
+                return "waiting"
+        try:
+            with proc.file_lock(self.cfg.lock_file, wait=120):
+                if self._stop_key() != key:
+                    return "changed"
+                self._save_recover_state(key, "checking")
+                return self._recover_locked(run, stop_text, key)
+        except proc.LockBusy:
+            log.info("Lock belegt, Wiederanlauf später.")
+            return "busy"
+
+    def _stop_key(self) -> str | None:
+        try:
+            text = self.cfg.stop_file.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            return None
+        return hashlib.sha256(text.encode()).hexdigest()
+
+    def _recover_state_path(self) -> Path:
+        return self.cfg.state_dir / "recover.json"
+
+    def _recover_state(self) -> dict:
+        try:
+            return json.loads(self._recover_state_path().read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def _save_recover_state(self, key: str, decision: str) -> None:
+        state = self._recover_state()
+        if state.get("key") != key:
+            state = {"key": key}
+        if decision == "checking":
+            state["checked_at"] = self.d.clock()
+        state["decision"] = decision
+        path = self._recover_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+
+    def _recover_locked(self, run: Run, stop_text: str, key: str) -> str:
+        rdir = self._run_dir(run.run_id)
+        wt = rdir / "recover-tree"
+        try:
+            tofu, changes, problems, info = self._recover_check(run, rdir, wt)
+            if self._stop_key() != key:
+                return "changed"
+            if not changes and not problems:
+                return self._resume(run, stop_text, key, "UDM gleich main, Prüfung bestanden", info)
+            return self._recover_ask(run, stop_text, key, tofu, changes, problems, info)
+        except Exception as e:  # noqa: BLE001, STOP bleibt in jedem Fall stehen
+            log.exception("Wiederanlauf nach %s abgebrochen", run.run_id)
+            self._save_recover_state(key, "error")
+            self._notify(f"⚠️ **Gate steht weiter**: Selbstprüfung nach {run.branch} abgebrochen\n"
+                         f"{short_reason(f'{type(e).__name__}: {e}')}")
+            return "error"
+        finally:
+            self.d.git.remove_worktree(wt)
+
+    def _recover_check(self, run: Run, rdir: Path, wt: Path) -> tuple[Any, list, list[str], list[str]]:
+        """Plan von main gegen den Controller, bei leerem Plan der recover-Hook.
+
+        Ergebnis: tofu (für ein späteres Apply), geplante Änderungen, blockierende Probleme, Hinweise.
+        """
+        git = self.d.git
+        git.fetch()
+        git.worktree(wt, git.rev(f"origin/{self.cfg.repo.main}"))
+        tofu = self._tofu_in(wt)
+        r = tofu.init()
+        if not r.ok:
+            return tofu, [], [f"tofu init fehlgeschlagen: {short_reason(r.tail(8))}"], []
+        planfile = rdir / "recover.bin"
+        r = tofu.plan(planfile)
+        if not r.ok:
+            return tofu, [], [f"tofu plan fehlgeschlagen: {short_reason(r.tail(8))}"], []
+        dec = classify(tofu.show_json(planfile), self.d.policy, rollback=True)
+        if dec.level == "reject":
+            return tofu, [], ["Plan von main verletzt forbidden: " + "; ".join(dec.reasons)], []
+        if dec.changes:
+            return tofu, dec.changes, [], []
+        if not self.d.hooks.configured("recover"):
+            return tofu, [], ["Plan leer, aber kein recover-Hook für den Abgleich mit dem Snapshot"], []
+        snap_before = rdir / "snapshot-before"
+        snap_after = None
+        if self.d.hooks.configured("snapshot"):
+            snap_after = rdir / "snapshot-recover"
+            shutil.rmtree(snap_after, ignore_errors=True)
+            hr = self.d.hooks.snapshot(run.run_id, snap_after)
+            if not hr.ok:
+                return tofu, [], ["Snapshot fehlgeschlagen: " + "; ".join(hr.messages())], []
+        plan_path = rdir / "recover-check.json"
+        plan_path.write_text(json.dumps({"format_version": "1.2", "resource_changes": []}), encoding="utf-8")
+        os.chmod(plan_path, 0o600)
+        hr = self.d.hooks.run("recover", run.run_id, plan_json=plan_path, repo_dir=wt,
+                              snapshot_before=snap_before if snap_before.is_dir() else None,
+                              snapshot_after=snap_after)
+        if not hr.ok:
+            return tofu, [], hr.messages(), []
+        return tofu, [], [], hr.messages()
+
+    def _recover_ask(self, run: Run, stop_text: str, key: str, tofu, changes: list,
+                     problems: list[str], info: list[str]) -> str:
+        since = time.strftime("%d.%m. %H:%M UTC", time.gmtime(self.cfg.stop_file.stat().st_mtime))
+        lines = [f"🛑 Gate steht seit {since}, Rollback von {run.branch} fehlgeschlagen.",
+                 "Selbstprüfung nicht bestanden:"]
+        if changes:
+            lines.append("Plan von main nicht leer:\n" + planlib.summarize(changes))
+        lines += [f"- {short_reason(p, 200)}" for p in problems[:8]]
+        if len(problems) > 8:
+            lines.append(f"- … und {len(problems) - 8} weitere")
+        lines.append(("Accept: main erneut anwenden und STOP aufheben." if changes else "Accept: STOP aufheben.")
+                     + " Decline: STOP bleibt, ohne erneute Nachfrage.")
+        if not self.d.approver:
+            self._save_recover_state(key, "kept")
+            self._notify("\n".join(lines))
+            return "kept"
+        self._save_recover_state(key, "asked")
+        detail = "\n".join([*(c.address for c in changes), *problems])
+        res = self.d.approver.request(
+            plan_hash=hashlib.sha256(f"recover\n{key}\n{detail}".encode()).hexdigest(),
+            summary="\n".join(lines), timeout_s=self.cfg.approval_timeout_minutes * 60)
+        if self._stop_key() != key:
+            return "changed"
+        if getattr(res, "approved", False):
+            if changes:
+                err = self._recover_apply(tofu, run, changes)
+                if err:
+                    self._save_recover_state(key, "failed")
+                    self._notify(f"🛑 **Gate steht weiter**: main ließ sich nicht erneut anwenden\n{short_reason(err)}")
+                    return "kept"
+            return self._resume(run, stop_text, key, "freigegeben", info)
+        if getattr(res, "reason", "") == "declined":
+            self._save_recover_state(key, "declined")
+            self._notify(f"🛑 **STOP bleibt** (nach {run.branch}). Aufheben von Hand: rm {self.cfg.stop_file}")
+            return "declined"
+        self._save_recover_state(key, "timeout")
+        return "waiting"
+
+    def _recover_apply(self, tofu, run: Run, approved: list) -> str | None:
+        """Nach Accept: main frisch planen und nur anwenden, wenn der Plan noch der gezeigte ist."""
+        planfile = self._run_dir(run.run_id) / "recover-apply.bin"
+        r = tofu.plan(planfile)
+        if not r.ok:
+            return f"tofu plan fehlgeschlagen:\n{r.tail(8)}"
+        dec = classify(tofu.show_json(planfile), self.d.policy, rollback=True)
+        if dec.level == "reject":
+            return "Plan von main verletzt forbidden: " + "; ".join(dec.reasons)
+        if sorted((c.address, c.action) for c in dec.changes) != sorted((c.address, c.action) for c in approved):
+            return "Plan hat sich seit der Freigabe geändert, neue Prüfung beim nächsten Lauf"
+        r = tofu.apply(planfile)
+        if not r.ok:
+            return f"tofu apply fehlgeschlagen:\n{r.tail(8)}"
+        r = tofu.plan_detailed()
+        if r.rc != 0:
+            return f"Plan nach dem Apply nicht leer (rc={r.rc})"
+        return None
+
+    def _resume(self, run: Run, stop_text: str, key: str, why: str, info: list[str]) -> str:
+        stamp = time.strftime("%Y%m%d", time.gmtime(self.d.clock()))
+        copy = self.cfg.state_dir / f"STOP-{stamp}-{run.run_id}.txt"
+        copy.write_text(stop_text, encoding="utf-8")
+        os.chmod(copy, 0o600)
+        self.cfg.stop_file.unlink()
+        self._save_recover_state(key, "resumed")
+        text = f"✅ **Gate läuft wieder**: STOP nach {run.branch} aufgehoben ({why})."
+        if info:
+            text += "\nZur Info, sonst abweichend: " + "; ".join(short_reason(i, 160) for i in info[:5])
+            if len(info) > 5:
+                text += f" (+{len(info) - 5})"
+        self._notify(text)
+        return "resumed"

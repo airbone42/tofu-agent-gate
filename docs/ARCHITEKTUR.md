@@ -78,6 +78,7 @@ hooks:                             # argv-Listen, leer = aus
   pre_apply: []                    # Invarianten auf dem geplanten Zustand
   post_apply: []                   # Health-Checks und Invarianten auf frischem Export
   post_rollback: []                # nach dem Rollback: frischer Export gleich Snapshot vorher?
+  recover: []                      # nach STOP (Befehl recover): darf das Gate von selbst weiterlaufen?
 
 redaction:
   extra: null                      # z. B. "unifi_snapshot.normalize:redact_text"
@@ -90,7 +91,7 @@ Ein Hook ist eine argv-Liste. Das Gate setzt diese Umgebungsvariablen:
 | Variable | Inhalt |
 |---|---|
 | `GATE_RUN_ID` | ID des Laufs |
-| `GATE_PHASE` | `snapshot`, `pre_apply`, `post_apply` oder `post_rollback` |
+| `GATE_PHASE` | `snapshot`, `pre_apply`, `post_apply`, `post_rollback` oder `recover` |
 | `GATE_PLAN_JSON` | Pfad zum Plan-JSON. Bei `post_rollback` ein leerer Plan, erwartet ist keine Änderung |
 | `GATE_REPO_DIR` | Checkout, der geplant wurde |
 | `GATE_SNAPSHOT_OUT` | nur `snapshot`: Zielordner |
@@ -208,3 +209,14 @@ Ergebnisdateien liegen unter `state_dir/runs/<run_id>.json` und werden nicht ins
    - Fehlt der Snapshot vorher oder meldet der Hook einen Verstoß, gilt der Rollback als fehlgeschlagen.
 6. **Melden:** Erfolg oder Fehlschlag per Telegram. Bei Fehlschlag setzt der Rollback die STOP-Datei, damit nichts weiterläuft, bis ein Mensch draufschaut.
 7. **Warteschlange verwerfen** (bei Fehlschlag, `discard_pending_on_stop`, Standard an): Alle noch nicht gelaufenen Branches bekommen einen Lauf mit Status `discarded` und gelten als gesehen. Sie wurden gegen einen Stand geschrieben, der nicht mehr gilt, und liefen sonst nach dem Aufheben von STOP ungeprüft durch. Die Telegram-Meldung nennt sie. Neuer Versuch = neuer Commit.
+
+### Wiederanlauf nach STOP (`recover`)
+
+`python -m tofu_agent_gate recover` läuft per Timer (z. B. alle 10 min) und hebt einen STOP nach `rollback_failed` selbst auf, wenn der Stand wieder stimmt. Von Hand oder vom Deploy gesetzte STOP-Dateien bleiben unberührt: Erkannt wird nur die erste Zeile `Rollback <run_id> fehlgeschlagen` zu einem Lauf mit Status `rollback_failed`.
+
+1. **Je STOP einmal prüfen** (Lock): main frisch planen, Policy im Rollback-Modus. Ist der Plan leer, frischen Snapshot nach `work/<run_id>/snapshot-recover` ziehen und den `recover`-Hook mit `snapshot-before` des Laufs ausführen. Bestandener Hook mit Meldungen = nur Hinweise.
+2. **Grün** (Plan leer, Hook ohne Verstoß): STOP nach `state_dir/STOP-<datum>-<run_id>.txt` kopieren und entfernen, Meldung "Gate läuft wieder" mit den Hinweisen.
+3. **Sonst eine Freigabe:** Accept wendet main erneut an, falls der Plan nicht leer war (nur wenn ein frischer Plan noch dieselben Änderungen zeigt), und hebt den STOP auf. Decline lässt ihn stehen, das Gate fragt zu diesem STOP nicht mehr. Ohne Antwort fragt es frühestens nach `recover_reask_hours` (Standard 6) erneut.
+4. Stand in `state_dir/recover.json` (Schlüssel = Hash der STOP-Datei). Ein neuer Inhalt der STOP-Datei gilt als neuer STOP.
+
+Ohne `recover`-Hook hebt das Gate einen STOP nie von selbst auf, es fragt immer.

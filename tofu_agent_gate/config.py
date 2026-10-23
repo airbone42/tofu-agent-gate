@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 
 DEFAULT_CONFIG = "/etc/tofu-agent-gate/gate.yaml"
-HOOK_PHASES = ("snapshot", "pre_apply", "post_apply", "post_rollback", "summary")
+HOOK_PHASES = ("snapshot", "pre_apply", "post_apply", "post_rollback", "recover", "summary")
 
 
 class ConfigError(ValueError):
@@ -73,6 +73,8 @@ class Config:
     # Nach einem fehlgeschlagenen Rollback alle wartenden Branches verwerfen. Sie bauen auf einem
     # Stand auf, der so nicht mehr gilt. Neuer Versuch nach dem STOP = neuer Commit.
     discard_pending_on_stop: bool = True
+    # recover: je STOP eine Prüfung, eine Nachfrage ohne Antwort frühestens nach so vielen Stunden erneut
+    recover_reask_hours: float = 6
     source: Path | None = None
 
     @property
@@ -136,6 +138,7 @@ def from_dict(d: dict, source: Path | None = None) -> Config:
             drain_minutes=int(d.get("drain_minutes", 0)),
             drain_pause_seconds=int(d.get("drain_pause_seconds", 15)),
             discard_pending_on_stop=bool(d.get("discard_pending_on_stop", True)),
+            recover_reask_hours=float(d.get("recover_reask_hours", 6)),
             source=source,
         )
     except KeyError as e:
