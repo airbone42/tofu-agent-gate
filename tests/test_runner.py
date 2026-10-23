@@ -164,6 +164,7 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(self.deadman.scheduled, [run.run_id])
         self.assertIn(run.run_id, self.deadman.cancelled)
         self.assertEqual(self.approver.requests, [])
+        self.assertTrue(any("Angewendet" in n for n in self.approver.notes))
 
     def test_same_head_not_processed_twice(self):
         rec = {"name": "host-2.forbidden-not.example", "record_type": "A", "value": "198.51.100.2"}
@@ -191,6 +192,7 @@ class RunnerTest(unittest.TestCase):
         [run] = self.runner.run_once()
         self.assertEqual(run.status, "applied", run.reasons)
         self.assertEqual(run.level, "approval")
+        self.assertEqual(self.approver.notes, [])  # nach Freigabe keine Erfolgsmeldung
 
     def test_forbidden_rejected_without_apply(self):
         rec = {"name": "x.auto.example", "record_type": "CNAME", "value": "forbidden.example"}

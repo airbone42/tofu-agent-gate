@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `max_branches_per_run` (default 0 = all): `run-once` processes at most this many branches and then releases the lock, so other services sharing the lock do not wait behind a whole queue
+- No "applied" notification after a human approval: success is the expected outcome there, failures, rollbacks and unmerged applies are still reported
 
 ## 0.1.0 - 2026-10-20
 
