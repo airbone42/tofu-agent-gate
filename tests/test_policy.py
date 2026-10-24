@@ -45,6 +45,15 @@ def pol(**over) -> Policy:
 
 
 class ClassifyTest(unittest.TestCase):
+    def test_review_level_between_auto_and_approval(self):
+        rules = [{"level": "review", "type": "unifi_dns_record"}]
+        p = plan(rc("unifi_dns_record.a", ["create"], None, dns_obj(None, "host-1.example")))
+        self.assertEqual(classify(p, pol(rules=rules)).level, "review")
+        both = plan(rc("unifi_dns_record.a", ["create"], None, dns_obj(None, "host-1.example")),
+                    rc("unifi_firewall_policy.x", ["create"], None, policy_obj(None, "x", "iot", "lan")))
+        self.assertEqual(classify(both, pol(rules=rules)).level, "approval")
+        self.assertEqual(classify(p, pol(rules=[], default="review")).level, "review")
+
     def test_dns_create_is_auto(self):
         p = plan(rc("unifi_dns_record.a", ["create"], None, dns_obj(None, "host-1.example")))
         d = classify(p, pol())

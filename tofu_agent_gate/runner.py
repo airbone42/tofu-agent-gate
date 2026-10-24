@@ -49,7 +49,7 @@ def short_reason(text: str | None, limit: int = 300) -> str:
 
 class Approver(Protocol):
     def request(self, *, plan_hash: str, summary: str, agent_reason: str | None = None,
-                link: str | None = None, timeout_s: int = 1800) -> Any: ...
+                link: str | None = None, timeout_s: int = 1800, delegate: bool = False) -> Any: ...
 
     def notify(self, text: str) -> None: ...
 
@@ -384,7 +384,7 @@ class Runner:
             run.save(self.cfg.runs_dir)
 
         approved_warnings = None
-        if run.level == "approval":
+        if run.level in ("review", "approval"):
             if not self.d.approver:
                 return self._reject(run, "Freigabe nötig, aber kein Freigabekanal konfiguriert")
             link = self.cfg.repo.commit_url.format(sha=br.head) if self.cfg.repo.commit_url else None
@@ -393,12 +393,16 @@ class Runner:
             res = self.d.approver.request(
                 plan_hash=run.plan_hash, summary=f"{run.summary}{warn}\n\nBranch {br.name}",
                 agent_reason=git.message(br.head), link=link,
-                timeout_s=self.cfg.approval_timeout_minutes * 60,
+                timeout_s=self.cfg.approval_timeout_minutes * 60, delegate=run.level == "review",
             )
             if not getattr(res, "approved", False):
-                why = {"declined": "abgelehnt", "timeout": "keine Antwort"}.get(getattr(res, "reason", ""), "")
-                self._notify(f"🚫 **Nicht freigegeben**: {br.name}" + (f" ({why})" if why else ""))
-                return self._finish(run, "declined", getattr(res, "reason", None))
+                why = {"declined": "abgelehnt", "timeout": "keine Antwort",
+                       "delegate_denied": "vom Prüfer abgelehnt"}.get(getattr(res, "reason", ""), "")
+                note = getattr(res, "note", "") or ""
+                self._notify(f"🚫 **Nicht freigegeben**: {br.name}" + (f" ({why})" if why else "")
+                             + (f"\n{short_reason(note)}" if note else ""))
+                reason = getattr(res, "reason", None)
+                return self._finish(run, "declined", f"{reason}: {note}" if note else reason)
             if warnings:
                 approved_warnings = rdir / "approved-warnings.json"
                 approved_warnings.write_text(json.dumps(warnings, ensure_ascii=False), encoding="utf-8")

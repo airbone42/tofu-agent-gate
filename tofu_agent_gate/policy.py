@@ -1,7 +1,8 @@
 """Policy-Engine: ordnet einen Plan einer Autonomie-Stufe zu.
 
-Stufen: auto < approval < reject. Das Gesamtergebnis ist die strengste Stufe
-aller Einzeländerungen. Die Policy-Datei liegt beim Runner, nie im Repo.
+Stufen: auto < review < approval < reject. Das Gesamtergebnis ist die strengste Stufe
+aller Einzeländerungen. review: ein beauftragter Prüfer (approval.delegate_command) darf freigeben,
+ohne Prüfer oder wenn er nicht entscheidet, fragt das Gate wie bei approval. Die Policy-Datei liegt beim Runner, nie im Repo.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import yaml
 
 from . import plan as planlib
 
-LEVELS = ("auto", "approval", "reject")
+LEVELS = ("auto", "review", "approval", "reject")
 ACTIONS = {"create", "update", "delete", "replace", "import"}
 
 

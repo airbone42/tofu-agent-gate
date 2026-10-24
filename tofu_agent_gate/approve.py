@@ -3,6 +3,9 @@
 Eine Freigabe ist an einen Plan-Hash gebunden, zählt genau einmal und läuft ab.
 Anfragen und der getUpdates-Offset liegen als JSON-Dateien in store_dir, damit
 Replay-Schutz und Ablauf auch über Neustarts greifen.
+
+Mit delegate=True (Stufe review) entscheidet zuerst der beauftragte Prüfer (delegate.py). Nur wenn er
+eskaliert oder nicht antwortet, geht die Anfrage an Telegram, mit seinem Hinweis in der Nachricht.
 """
 
 from __future__ import annotations
@@ -38,6 +41,8 @@ ACCEPTED = "accepted"
 DECLINED = "declined"
 TIMEOUT = "timeout"
 SEND_FAILED = "send_failed"
+DELEGATED = "delegated"            # vom Prüfer freigegeben
+DELEGATE_DENIED = "delegate_denied"
 
 _ID_RE = re.compile(r"[0-9a-f]{16}")
 _CALLBACK_RE = re.compile(r"([0-9a-f]{16}):([ad])")
@@ -49,6 +54,7 @@ class ApprovalResult:
     approved: bool
     reason: str
     request_id: str
+    note: str = ""  # Begründung des Prüfers bei delegated / delegate_denied
 
 
 def tg_len(text: str) -> int:
@@ -121,6 +127,7 @@ class Approver:
         poll_timeout: int = 50,
         sleep: Callable[[float], None] = time.sleep,
         max_backoff: float = 60,
+        delegate: Callable[[dict], Any] | None = None,
     ) -> None:
         self.api = api
         self.owner_user_id = int(owner_user_id)
@@ -131,6 +138,7 @@ class Approver:
         self.sleep = sleep
         self.poll_timeout = max(1, int(poll_timeout))
         self.max_backoff = max_backoff
+        self.delegate = delegate
         self._requests_dir = self.store_dir / "requests"
         self._offset_path = self.store_dir / "offset.json"
         self.store_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -290,8 +298,11 @@ class Approver:
         agent_reason: str | None = None,
         link: str | None = None,
         timeout_s: float = 1800,
+        delegate: bool = False,
     ) -> ApprovalResult:
-        """Freigabe anfragen und blockierend auf Accept, Decline oder Ablauf warten."""
+        """Freigabe anfragen und blockierend auf Accept, Decline oder Ablauf warten.
+
+        delegate: erst den beauftragten Prüfer fragen (Stufe review), ohne Prüfer wie bisher."""
         if not isinstance(plan_hash, str) or not plan_hash:
             raise ValueError("plan_hash fehlt")
         rid = self._new_request_id()
@@ -308,6 +319,25 @@ class Approver:
         }
         # ID reservieren, bevor die Nachricht rausgeht
         self._save_record(record)
+
+        if delegate and self.delegate is not None:
+            record["status"] = "delegated"
+            self._save_record(record)
+            verdict = self.delegate({"request_id": rid, "plan_hash": plan_hash, "summary": self.redact(summary or ""),
+                                     "agent_reason": self.redact(agent_reason or ""), "link": link,
+                                     "timeout_s": timeout_s})
+            decision = getattr(verdict, "decision", None)
+            by = getattr(verdict, "by", "") or "Prüfer"
+            note = getattr(verdict, "note", "") or ""
+            if decision in ("approve", "deny"):
+                approved = decision == "approve"
+                record.update(status="approved" if approved else "declined", decided_at=self.clock(),
+                              decided_by=f"delegate:{by}", note=note)
+                self._save_record(record)
+                return ApprovalResult(approved, DELEGATED if approved else DELEGATE_DENIED, rid, note)
+            record["status"] = "sending"
+            self._save_record(record)
+            summary = f"{summary}\n\n🤖 {by} gibt das an dich weiter" + (f": {note}" if note else "")
 
         content = {"request_id": rid, "plan_hash": plan_hash, "summary": summary,
                    "agent_reason": agent_reason, "link": link}

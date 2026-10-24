@@ -28,7 +28,13 @@ def build_approver(cfg: configlib.Config, redact):
     from .telegram import from_env_file
 
     tg = from_env_file(cfg.telegram_env)
-    return Approver(tg.api(), tg.owner_id, tg.chat_id, cfg.state_dir / "approvals", redact=redact)
+    delegate = None
+    if cfg.delegate_command:
+        from .delegate import CommandDelegate
+
+        delegate = CommandDelegate(cfg.delegate_command, redact=redact)
+    return Approver(tg.api(), tg.owner_id, tg.chat_id, cfg.state_dir / "approvals", redact=redact,
+                    delegate=delegate)
 
 
 def notify_throttled(cfg: configlib.Config, approver, text: str, key: str | None = None,
@@ -109,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         dec = classify(plan_json, pol, rollback=args.rollback)
         print(json.dumps(dec.to_dict(), indent=2, ensure_ascii=False))
         print(planlib.summarize(dec.changes), file=sys.stderr)
-        return {"auto": 0, "approval": 10, "reject": 20}[dec.level]
+        return {"auto": 0, "review": 5, "approval": 10, "reject": 20}[dec.level]
 
     if args.cmd == "check-config":
         Policy.load(cfg.policy)

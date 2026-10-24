@@ -3,7 +3,7 @@
 A small, auditable gate that lets AI agents (or any untrusted automation) propose infrastructure changes to an OpenTofu configuration, and rolls them out without a human in the loop when automatic guardrails allow it.
 
 - Agents push a branch `desired/<topic>`. They never get provider credentials.
-- A runner on a trusted host plans the branch, classifies the plan with a policy (`auto`, `approval`, `reject`), optionally asks a human via Telegram (Accept/Decline bound to the plan hash), applies, runs health checks and rolls back automatically on failure.
+- A runner on a trusted host plans the branch, classifies the plan with a policy (`auto`, `review`, `approval`, `reject`), optionally lets a delegate (e.g. an LLM reviewer) decide `review` plans, asks a human via Telegram (Accept/Decline bound to the plan hash), applies, runs health checks and rolls back automatically on failure.
 - A dead-man switch (systemd timer) rolls back even if the runner hangs or crashes mid-apply.
 
 Nothing in here is specific to a provider. It was built for a UniFi network managed with `ubiquiti-community/unifi`, but works with any provider.

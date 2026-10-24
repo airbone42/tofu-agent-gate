@@ -28,7 +28,8 @@ POLICY = {
     "version": 1,
     "limits": {"max_changes": 5, "allow_delete": ["unifi_dns_record"]},
     "forbidden": [{"type": "unifi_setting"}, {"references": ["forbidden.example"]}],
-    "rules": [{"level": "auto", "type": "unifi_dns_record", "where": {"name": {"regex": r".*\.auto\.example"}}}],
+    "rules": [{"level": "auto", "type": "unifi_dns_record", "where": {"name": {"regex": r".*\.auto\.example"}}},
+              {"level": "review", "type": "unifi_dns_record", "where": {"name": {"regex": r".*\.review\.example"}}}],
     "default": "approval",
 }
 
@@ -49,6 +50,7 @@ class Res:
     approved: bool
     reason: str
     request_id: str = "r"
+    note: str = ""
 
 
 class FakeApprover:
@@ -191,6 +193,30 @@ class RunnerTest(unittest.TestCase):
         self.assertIn("Brauche other.example", req["agent_reason"])
         self.assertNotIn('unifi_dns_record.this["other"]', self._ctl())
         self.assertIn("desired/other", self._branches())
+
+    def test_review_level_asks_with_delegate(self):
+        rec = {"name": "host-3.review.example", "record_type": "A", "value": "198.51.100.4"}
+        self._push_branch("desired/review", self._with("host-3", rec))
+        [run] = self.runner.run_once()
+        self.assertEqual(run.status, "applied", run.reasons)
+        self.assertEqual(run.level, "review")
+        self.assertTrue(self.approver.requests[0]["delegate"])
+
+    def test_approval_level_never_delegates(self):
+        rec = {"name": "other.example", "record_type": "A", "value": "198.51.100.3"}
+        self._push_branch("desired/other", self._with("other", rec))
+        self.runner.run_once()
+        self.assertFalse(self.approver.requests[0]["delegate"])
+
+    def test_delegate_denial_note_reaches_run_and_message(self):
+        rec = {"name": "host-3.review.example", "record_type": "A", "value": "198.51.100.4"}
+        self.approver.request = lambda **kw: Res(False, "delegate_denied", "r", "passt zu keinem Auftrag")
+        self._push_branch("desired/review", self._with("host-3", rec))
+        [run] = self.runner.run_once()
+        self.assertEqual(run.status, "declined")
+        self.assertIn("delegate_denied: passt zu keinem Auftrag", run.reasons)
+        self.assertIn("vom Prüfer abgelehnt", self.approver.notes[-1])
+        self.assertIn("passt zu keinem Auftrag", self.approver.notes[-1])
 
     def test_approval_accepted_applies(self):
         rec = {"name": "other.example", "record_type": "A", "value": "198.51.100.3"}

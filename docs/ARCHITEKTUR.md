@@ -8,7 +8,8 @@ Generisches Gate um OpenTofu für Änderungen, die Agenten vorschlagen. Nichts h
 |---|---|
 | `config.py` | `gate.yaml` laden. Pfad aus `GATE_CONFIG`, Default `/etc/tofu-agent-gate/gate.yaml` |
 | `plan.py` | Plan-JSON (`tofu show -json`) lesen: Änderungen, Aktionen, sensible Werte maskieren, Zusammenfassung |
-| `policy.py` | Policy-Engine: `auto`, `approval` oder `reject` je Plan |
+| `policy.py` | Policy-Engine: `auto`, `review`, `approval` oder `reject` je Plan |
+| `delegate.py` | Beauftragter Prüfer für die Stufe `review` (Befehl mit JSON auf stdin und stdout) |
 | `redact.py` | Generische Redaction für alles, was nach außen geht (Telegram, Logs, Ergebnisdateien) |
 | `telegram.py` | Dünner Client für die Bot-API, Transport austauschbar (Tests ohne Netz) |
 | `approve.py` | Freigabe per Inline-Buttons, gebunden an Plan-Hash, einmalig, mit Ablauf |
@@ -66,6 +67,7 @@ policy: /etc/tofu-agent-gate/policy.yaml
 approval:
   telegram_env: /etc/tofu-agent-gate/telegram.env
   timeout_minutes: 30
+  delegate_command: []             # Stufe review: argv des Prüfers, leer = review wie approval
 
 deadman:
   minutes: 10
@@ -143,7 +145,8 @@ default: approval
 ```
 
 - Geprüft wird jede Ressource aus `resource_changes` mit Aktion ungleich `no-op` (`read` zählt nicht).
-- **Gesamtergebnis:** das strengste Einzelergebnis, mit der Reihenfolge `auto` < `approval` < `reject`.
+- **Gesamtergebnis:** das strengste Einzelergebnis, mit der Reihenfolge `auto` < `review` < `approval` < `reject`.
+- **`review`:** Ein beauftragter Prüfer (`approval.delegate_command`) entscheidet zuerst. `approve` wendet an, `deny` lehnt ab (Begründung landet im Lauf und in der Meldung), `escalate`, Exit ungleich 0, ungültige Ausgabe oder Zeitüberschreitung fragen per Telegram wie bei `approval`, mit dem Hinweis des Prüfers. Ohne Prüfer ist `review` gleich `approval`. Freigebbare Verstöße aus `pre_apply` heben jeden Plan auf `approval`, der Prüfer sieht sie nie.
 - **Wann `reject`:** bei `forbidden`, bei überschrittenem Limit, bei `delete` oder `replace` ohne Erlaubnis, bei unbekannter `mode`, sowie bei einem Plan mit Fehlern oder `errored: true`.
 - **`where`:** Pfad mit Punkten in `before` und `after`. Beide Seiten müssen passen, sonst könnte ein Update aus einer erlaubten Zone in eine verbotene wandern.
 - **Rollback-Modus:** Es gilt nur `forbidden`. Limits und Freigabe entfallen.
@@ -154,7 +157,8 @@ default: approval
 api = TelegramApi(token, transport=None)          # transport(method, params) -> dict, für Tests
 approver = Approver(api, owner_user_id, owner_chat_id, store_dir, redact=fn, clock=time.time)
 result = approver.request(plan_hash=..., summary=..., agent_reason=..., link=..., timeout_s=1800)
-# ApprovalResult(approved: bool, reason: str, request_id: str)
+# ApprovalResult(approved: bool, reason: str, request_id: str, note: str)
+result = approver.request(..., delegate=True)      # Stufe review: erst delegate(request) -> Verdict
 approver.notify(text)
 ```
 
@@ -169,6 +173,7 @@ approver.notify(text)
 - **Andere Klicks:** `answerCallbackQuery` mit Hinweis, sonst nichts.
 - **Danach:** `answerCallbackQuery` und `editMessageText` mit dem Ergebnis, ohne Buttons. Timeout zählt als Decline.
 - **Text:** höchstens 4096 Zeichen, sonst kürzen und den Link anhängen. Die Begründung des Agenten steht getrennt unter "Begründung des Agenten (ungeprüft):" und wird auf 800 Zeichen gekürzt.
+- **Prüfer (`delegate=True`):** `delegate.CommandDelegate(argv)` bekommt `{request_id, plan_hash, summary, agent_reason, link, timeout_s}` (redigiert) auf stdin und liefert in der letzten JSON-Zeile `{decision: approve|deny|escalate, by, note}`. approve und deny gehen ohne Telegram (`reason` `delegated` bzw. `delegate_denied`, `decided_by` `delegate:<by>` im Store), alles andere fällt auf die Telegram-Freigabe zurück.
 - **Long Polling:** `getUpdates` mit `allowed_updates=["callback_query"]`. Der Offset wird in `store_dir` gespeichert.
 
 ## Ablauf je Branch (runner.py)

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Policy level `review` between `auto` and `approval`: a delegate command (`approval.delegate_command`, JSON on stdin and stdout) decides first. `approve` applies, `deny` rejects with its note in the run and the notification, anything else (escalate, error, timeout) falls back to the Telegram approval with the delegate's note. Without a delegate `review` behaves like `approval`. Approvable `pre_apply` findings always force `approval`
 - `recover` command and hook phase: after a failed rollback a timer re-plans main once per STOP; empty plan plus a passing `recover` hook lifts the STOP automatically (copy kept in `state_dir`), otherwise one Telegram approval (Accept re-applies main and lifts it, Decline keeps it). Manual STOP files are never touched. If main does not plan empty but the failed run's merge commit does (apply went through, only the checks failed), the branch is rolled forward into main instead
 - `discard_pending_on_stop` (default on): after a failed rollback all branches still waiting get status `discarded` and are named in the STOP notification. They were written against a state that no longer holds; after the STOP only a new commit runs them
 - `max_branches_per_run` (default 0 = all): `run-once` processes at most this many branches and then releases the lock, so other services sharing the lock do not wait behind a whole queue
