@@ -116,6 +116,42 @@ class ApproverDelegateTest(unittest.TestCase):
         self.assertEqual(self.asked, [])
         self.assertEqual(len(self.tg.sent), 1)
 
+    def owner_approver(self, verdict: Verdict) -> Approver:
+        ap = self.approver(verdict)
+        ap.delegate_owner = "tobias"
+        return ap
+
+    def test_owner_routing_sends_approval_level_to_delegate(self):
+        ap = self.owner_approver(Verdict("approve", "tobias", "per Klick"))
+        res = ap.request(plan_hash=HASH, summary="Policy löschen", timeout_s=60,
+                         context={"source": "enroll", "requested_by": "coach", "plan_hash": "x"})
+        self.assertEqual((res.approved, res.reason), (True, DELEGATED))
+        self.assertEqual(self.tg.sent, [])
+        req = self.asked[0]
+        self.assertTrue(req["must_ask"])
+        self.assertEqual((req["source"], req["requested_by"], req["plan_hash"]), ("enroll", "coach", HASH))
+
+    def test_owner_routing_needs_owner_click(self):
+        ap = self.owner_approver(Verdict("approve", "hermes", "sieht gut aus"))
+        self.tg.script = [lambda m: m.click("d", from_id=OWNER)]
+        res = ap.request(plan_hash=HASH, summary="Policy löschen", timeout_s=60)
+        self.assertFalse(res.approved)
+        self.assertIn("hermes gibt das an dich weiter: sieht gut aus", self.tg.sent[0]["params"]["text"])
+
+    def test_owner_routing_delegate_may_deny(self):
+        ap = self.owner_approver(Verdict("deny", "hermes", "nein"))
+        res = ap.request(plan_hash=HASH, summary="Policy löschen", timeout_s=60)
+        self.assertEqual((res.approved, res.reason), (False, DELEGATE_DENIED))
+
+    def test_review_level_is_not_must_ask_and_direct_skips_delegate(self):
+        ap = self.owner_approver(Verdict("approve", "hermes"))
+        self.assertTrue(ap.request(plan_hash=HASH, summary="x", timeout_s=60, delegate=True).approved)
+        self.assertFalse(self.asked[0]["must_ask"])
+        self.tg.script = [lambda m: m.click("a", from_id=OWNER)]
+        ap.request(plan_hash=HASH, summary="x", timeout_s=60, direct=True)
+        self.assertEqual(len(self.asked), 1)
+        self.assertEqual(len(self.tg.sent), 1)
+
     def test_secrets_are_redacted_before_delegate(self):
         ap = self.approver(Verdict("approve", "hermes"))
         ap.request(plan_hash=HASH, summary=f"Token {TOKEN}", timeout_s=60, delegate=True)

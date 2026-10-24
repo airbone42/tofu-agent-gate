@@ -49,7 +49,8 @@ def short_reason(text: str | None, limit: int = 300) -> str:
 
 class Approver(Protocol):
     def request(self, *, plan_hash: str, summary: str, agent_reason: str | None = None,
-                link: str | None = None, timeout_s: int = 1800, delegate: bool = False) -> Any: ...
+                link: str | None = None, timeout_s: int = 1800, delegate: bool = False,
+                direct: bool = False, context: dict | None = None) -> Any: ...
 
     def notify(self, text: str) -> None: ...
 

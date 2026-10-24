@@ -68,6 +68,7 @@ approval:
   telegram_env: /etc/tofu-agent-gate/telegram.env
   timeout_minutes: 30
   delegate_command: []             # Stufe review: argv des Prüfers, leer = review wie approval
+  delegate_owner: ""               # gesetzt: auch approval über den Prüfer, Freigabe nur mit by == Owner
 
 deadman:
   minutes: 10
@@ -146,7 +147,7 @@ default: approval
 
 - Geprüft wird jede Ressource aus `resource_changes` mit Aktion ungleich `no-op` (`read` zählt nicht).
 - **Gesamtergebnis:** das strengste Einzelergebnis, mit der Reihenfolge `auto` < `review` < `approval` < `reject`.
-- **`review`:** Ein beauftragter Prüfer (`approval.delegate_command`) entscheidet zuerst. `approve` wendet an, `deny` lehnt ab (Begründung landet im Lauf und in der Meldung), `escalate`, Exit ungleich 0, ungültige Ausgabe oder Zeitüberschreitung fragen per Telegram wie bei `approval`, mit dem Hinweis des Prüfers. Ohne Prüfer ist `review` gleich `approval`. Freigebbare Verstöße aus `pre_apply` heben jeden Plan auf `approval`, der Prüfer sieht sie nie.
+- **`review`:** Ein beauftragter Prüfer (`approval.delegate_command`) entscheidet zuerst. `approve` wendet an, `deny` lehnt ab (Begründung landet im Lauf und in der Meldung), `escalate`, Exit ungleich 0, ungültige Ausgabe oder Zeitüberschreitung fragen per Telegram wie bei `approval`, mit dem Hinweis des Prüfers. Ohne Prüfer ist `review` gleich `approval`. Mit `approval.delegate_owner` gehen auch `approval`-Anfragen (und recover) an den Prüfer, mit `must_ask: true`: Er legt sie dem Owner in seinem Kanal vor, eine Freigabe zählt nur mit `by` gleich dem Owner, ablehnen darf er selbst, alles andere fragt per Telegram. Freigebbare Verstöße aus `pre_apply` heben jeden Plan auf `approval`, der Prüfer sieht sie nie.
 - **Wann `reject`:** bei `forbidden`, bei überschrittenem Limit, bei `delete` oder `replace` ohne Erlaubnis, bei unbekannter `mode`, sowie bei einem Plan mit Fehlern oder `errored: true`.
 - **`where`:** Pfad mit Punkten in `before` und `after`. Beide Seiten müssen passen, sonst könnte ein Update aus einer erlaubten Zone in eine verbotene wandern.
 - **Rollback-Modus:** Es gilt nur `forbidden`. Limits und Freigabe entfallen.

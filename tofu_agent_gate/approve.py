@@ -6,6 +6,10 @@ Replay-Schutz und Ablauf auch über Neustarts greifen.
 
 Mit delegate=True (Stufe review) entscheidet zuerst der beauftragte Prüfer (delegate.py). Nur wenn er
 eskaliert oder nicht antwortet, geht die Anfrage an Telegram, mit seinem Hinweis in der Nachricht.
+
+Mit delegate_owner (z. B. "tobias") gehen auch alle übrigen Anfragen an den Prüfer, mit must_ask: Er legt sie
+dem Owner in seinem eigenen Kanal vor. Freigabe zählt dann nur mit by == delegate_owner, ablehnen darf er
+selbst. direct=True fragt sofort per Telegram (Rückfall, wenn der Prüfer schon eskaliert hat).
 """
 
 from __future__ import annotations
@@ -128,6 +132,7 @@ class Approver:
         sleep: Callable[[float], None] = time.sleep,
         max_backoff: float = 60,
         delegate: Callable[[dict], Any] | None = None,
+        delegate_owner: str = "",
     ) -> None:
         self.api = api
         self.owner_user_id = int(owner_user_id)
@@ -139,6 +144,7 @@ class Approver:
         self.poll_timeout = max(1, int(poll_timeout))
         self.max_backoff = max_backoff
         self.delegate = delegate
+        self.delegate_owner = delegate_owner
         self._requests_dir = self.store_dir / "requests"
         self._offset_path = self.store_dir / "offset.json"
         self.store_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -299,10 +305,14 @@ class Approver:
         link: str | None = None,
         timeout_s: float = 1800,
         delegate: bool = False,
+        direct: bool = False,
+        context: dict | None = None,
     ) -> ApprovalResult:
         """Freigabe anfragen und blockierend auf Accept, Decline oder Ablauf warten.
 
-        delegate: erst den beauftragten Prüfer fragen (Stufe review), ohne Prüfer wie bisher."""
+        delegate: erst den beauftragten Prüfer fragen (Stufe review), ohne Prüfer wie bisher.
+        Sonst mit delegate_owner: Prüfer legt die Anfrage dem Owner vor (must_ask). direct: sofort Telegram.
+        context: zusätzliche Felder für den Prüfer (z. B. source, requested_by)."""
         if not isinstance(plan_hash, str) or not plan_hash:
             raise ValueError("plan_hash fehlt")
         rid = self._new_request_id()
@@ -320,15 +330,21 @@ class Approver:
         # ID reservieren, bevor die Nachricht rausgeht
         self._save_record(record)
 
-        if delegate and self.delegate is not None:
+        must_ask = not delegate
+        if self.delegate is not None and not direct and (delegate or self.delegate_owner):
             record["status"] = "delegated"
             self._save_record(record)
-            verdict = self.delegate({"request_id": rid, "plan_hash": plan_hash, "summary": self.redact(summary or ""),
+            ctx = {k: v for k, v in (context or {}).items() if k in ("source", "requested_by")}
+            verdict = self.delegate({**ctx, "request_id": rid, "plan_hash": plan_hash,
+                                     "summary": self.redact(summary or ""),
                                      "agent_reason": self.redact(agent_reason or ""), "link": link,
-                                     "timeout_s": timeout_s})
+                                     "timeout_s": timeout_s, "must_ask": must_ask})
             decision = getattr(verdict, "decision", None)
             by = getattr(verdict, "by", "") or "Prüfer"
             note = getattr(verdict, "note", "") or ""
+            if decision == "approve" and must_ask and by != self.delegate_owner:
+                # Ohne Klick des Owners gilt die Freigabe nicht, dann fragt Telegram
+                decision, note = "escalate", note or "Freigabe nicht vom Owner"
             if decision in ("approve", "deny"):
                 approved = decision == "approve"
                 record.update(status="approved" if approved else "declined", decided_at=self.clock(),

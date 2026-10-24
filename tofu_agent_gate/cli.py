@@ -34,7 +34,7 @@ def build_approver(cfg: configlib.Config, redact):
 
         delegate = CommandDelegate(cfg.delegate_command, redact=redact)
     return Approver(tg.api(), tg.owner_id, tg.chat_id, cfg.state_dir / "approvals", redact=redact,
-                    delegate=delegate)
+                    delegate=delegate, delegate_owner=cfg.delegate_owner if delegate else "")
 
 
 def notify_throttled(cfg: configlib.Config, approver, text: str, key: str | None = None,

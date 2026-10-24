@@ -55,6 +55,8 @@ class Config:
     approval_timeout_minutes: int = 30
     # Stufe review: Befehl, der JSON auf stdin bekommt und eine Entscheidung liefert (delegate.py)
     delegate_command: list[str] = field(default_factory=list)
+    # Gesetzt (z. B. "tobias"): auch approval-Anfragen gehen an den Prüfer, der sie dem Owner vorlegt
+    delegate_owner: str = ""
     deadman_minutes: int = 10
     deadman_unit_prefix: str = "tofu-agent-gate-rollback"
     hooks: dict[str, list[str]] = field(default_factory=dict)
@@ -129,6 +131,7 @@ def from_dict(d: dict, source: Path | None = None) -> Config:
             telegram_env=_p(appr.get("telegram_env")),
             approval_timeout_minutes=int(appr.get("timeout_minutes", 30)),
             delegate_command=[str(x) for x in appr.get("delegate_command") or []],
+            delegate_owner=str(appr.get("delegate_owner") or ""),
             deadman_minutes=int(dm.get("minutes", 10)),
             deadman_unit_prefix=dm.get("unit_prefix", "tofu-agent-gate-rollback"),
             hooks={k: list(v) for k, v in hooks.items() if k in HOOK_PHASES and v},
